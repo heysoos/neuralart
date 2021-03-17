@@ -2,6 +2,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 from copy import deepcopy
+import matplotlib.pyplot as plt
+from PIL import Image
+
+from tqdm import tqdm
 
 
 class CPPN_block(nn.Module):
@@ -423,6 +427,7 @@ def multiscale_targets_apply(x, img, XRES, YRES, BATCH_SIZE, big_factor, keep_fu
         S[:num_full, :] = np.tile(np.array([1, 1]), (num_full, 1))
         T[:num_full, :] = np.tile(np.array([-1, -1]), (num_full, 1))
 
+    x = [xi.detach().cpu().numpy() for xi in x]
     min_x_old = x[0].min(1)[:, 0]
     min_x_scaled = min_x_old * S[:, 1]
     translation_x = T[:, 1] * np.abs(min_x_old) - min_x_scaled
@@ -435,6 +440,8 @@ def multiscale_targets_apply(x, img, XRES, YRES, BATCH_SIZE, big_factor, keep_fu
 
     x[2] = np.sqrt(x[0] ** 2 + x[1] ** 2)
     TARGET = torch.cuda.FloatTensor(TARGET[:, :, :, :3]).reshape(BATCH_SIZE, -1, 3)
+
+    x = [torch.cuda.FloatTensor(xi) for xi in x]
 
     return x, TARGET
 
