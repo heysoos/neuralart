@@ -5,7 +5,10 @@ RUN add-apt-repository -y ppa:savoury1/ffmpeg4 && \
     apt-get update -y && \
     apt-get install -y ffmpeg
 
-RUN python3 -m pip install --upgrade pip
+RUN python -m pip install --upgrade pip
+RUN python -m pip --no-cache-dir install \
+    p_tqdm \
+    tensorboard
 
 RUN mkdir /notebooks/neuralart
 
