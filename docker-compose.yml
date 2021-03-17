@@ -1,0 +1,36 @@
+version: "2.3"
+services:
+  
+  develop:
+    build:
+      context: .
+      dockerfile: $PWD/Dockerfile
+    image: neuralart
+    volumes:
+      - .:/notebooks
+    env_file:
+        - .env
+    ports:
+        - "10120:8888" # 10120-10139
+    environment:
+        - NVIDIA_VISIBLE_DEVICES=0
+    runtime: nvidia
+    entrypoint:
+        - jupyter
+        - lab
+        - --allow-root
+
+  job:
+    build:
+      context: .
+      dockerfile: $PWD/Dockerfile
+    image: neuralart
+    volumes:
+      - .:/notebooks
+    env_file:
+        - .env
+    environment:
+        - NVIDIA_VISIBLE_DEVICES=0
+    runtime: nvidia
+    entrypoint: ["python3.8", "run.py"]
+
