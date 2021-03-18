@@ -199,7 +199,7 @@ class Sampler():
                 xres = self.res
                 yres = self.res
             if coords is None:
-                coords = cppn._coordinates(scale, res, res, z)
+                coords = cppn._coordinates(scale, xres, yres, z)
 
             out = cppn.forward(coords, xres, yres).cpu().numpy()
 
