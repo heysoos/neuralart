@@ -50,16 +50,29 @@ class CA(nn.Module):
     def initGrid(self, BS, RES):
         self.psi = torch.cuda.FloatTensor(2 * np.random.rand(BS, self.channels, RES, RES) - 1)
 
+    def get_living_mask(self, x, alive_thres=0.1, dead_thres=0.5):
+        alpha_channel = x[:, 3:4, :, :]
+        R = self.radius
+        alpha_channel = F.pad(alpha_channel, (R, R, R, R), mode='circular')
+
+        alive_mask = F.max_pool2d(alpha_channel, kernel_size=2 * R + 1, stride=1, padding=R) > alive_thres
+        alive_mask = alive_mask[:, :, R:-R, R:-R]
+
+        # death_mask = F.avg_pool2d(alpha_channel, kernel_size=2 * R + 1, stride=1, padding=R) < dead_thres
+        # death_mask = death_mask[:, :, R:-R, R:-R]
+        # return alive_mask & death_mask
+
+        return alive_mask
+
     def forward(self):
         '''
         The first filter applies a depthwise convolution to the CA grid. Each channel in the filter is applied to its corresponding channel in the CA grid.
         The second and third filters are 1x1 convolutions which act to mix the channels.
         If I understand this correctly, this is essentially applying a depthwise seperable convolution operation on the input (but I am a bit uncertain).
         '''
-        #         weights = torch.cat(CHANNELS*[totalistic(self.rule.filter1)])
-        #         bias = torch.cat(CHANNELS*[self.rule.bias1])
 
         weights = totalistic(self.rule.filter1)
+        # weights = self.rule.filter1
         bias = self.rule.bias1
         R = self.radius
         # z = F.conv2d(self.psi, weight=weights, bias=bias, padding=2, groups=CHANNELS)
@@ -72,6 +85,31 @@ class CA(nn.Module):
         self.psi = torch.tanh(self.psi[:, :, R:-R, R:-R] + self.rule.filter3(z))
 
     #         self.psi = torch.clamp(self.psi[:, :, RADIUS:-RADIUS, RADIUS:-RADIUS] + self.rule.filter3(z), 0, 1)
+
+    def forward_masked(self, dt=1):
+        '''
+        The first filter applies a depthwise convolution to the CA grid. Each channel in the filter is applied to its corresponding channel in the CA grid.
+        The second and third filters are 1x1 convolutions which act to mix the channels.
+        If I understand this correctly, this is essentially applying a depthwise seperable convolution operation on the input (but I am a bit uncertain).
+        '''
+
+        pre_life_mask = self.get_living_mask(self.psi)
+        weights = totalistic(self.rule.filter1)
+        bias = self.rule.bias1
+        R = self.radius
+
+        self.psi = F.pad(self.psi, (R, R, R, R), 'circular')
+        z = F.conv2d(self.psi, weight=weights, bias=bias, padding=0, groups=self.channels)
+
+        z = F.leaky_relu(z)
+        z = F.leaky_relu(self.rule.filter2(z))
+
+        # self.psi = torch.tanh(self.psi[:, :, R:-R, R:-R] + dt*self.rule.filter3(z))
+        self.psi = torch.clamp(self.psi[:, :, R:-R, R:-R] + dt*self.rule.filter3(z), -1, 1)
+
+        post_living_mask = self.get_living_mask(self.psi)
+
+        self.psi = self.psi * (pre_life_mask & post_living_mask).type(torch.cuda.FloatTensor)
 
     def cleanup(self):
         del self.psi

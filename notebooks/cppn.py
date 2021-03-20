@@ -190,7 +190,7 @@ class Sampler():
         self.res = res
         self.scale = scale
 
-    def generate_img(self, cppn, z, scale=None, xres=None, yres=None, coords=None):
+    def generate_img(self, cppn, z, scale=None, xres=None, yres=None, coords=None, tensor=False):
 
         with torch.no_grad():
             if scale is None:
@@ -201,7 +201,10 @@ class Sampler():
             if coords is None:
                 coords = cppn._coordinates(scale, xres, yres, z)
 
-            out = cppn.forward(coords, xres, yres).cpu().numpy()
+            out = cppn.forward(coords, xres, yres)
+            if not tensor:
+                out = out.cpu().numpy()
+
 
         return out.reshape(yres, xres, -1)
 
