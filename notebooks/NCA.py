@@ -8,11 +8,23 @@ import torch.nn.functional as F
 
 HNM_STEPS = 3000  # Max number of steps to mine for a hard-negative sample before while-loop terminates
 
-def totalistic(x):
-    z = 0.125 * (x + x.flip(2) + x.flip(3) + x.flip(2).flip(3))
-    z = z + 0.125 * (x.transpose(2, 3) + x.transpose(2, 3).flip(2) + x.transpose(2, 3).flip(3) + x.transpose(2, 3).flip(
-        2).flip(3))
-    z = z - z.mean(3).mean(2).unsqueeze(2).unsqueeze(3)
+
+def totalistic(x, dim2=False):
+    if dim2:
+        y_idx = 0
+        x_idx = 1
+    else:
+        y_idx = 2
+        x_idx = 3
+    z = 0.125 * (x + x.flip(y_idx) + x.flip(x_idx) + x.flip(y_idx).flip(x_idx))
+    z = z + 0.125 * (x.transpose(y_idx, x_idx) +
+                     x.transpose(y_idx, x_idx).flip(y_idx) +
+                     x.transpose(y_idx, x_idx).flip(x_idx) +
+                     x.transpose(y_idx, x_idx).flip(y_idx).flip(x_idx))
+    if dim2:
+        z = z - z.mean()
+    else:
+        z = z - z.mean(x_idx).mean(y_idx).unsqueeze(y_idx).unsqueeze(x_idx)
 
     return z
 
@@ -24,16 +36,33 @@ class Rule(nn.Module):
         self.filters = FILTERS
         self.hidden = HIDDEN
 
-        Rk = RADIUS * 2 + 1
-        self.filter1 = nn.Parameter(torch.randn(FILTERS * CHANNELS, 1, Rk, Rk) / sqrt(FILTERS * CHANNELS))
-        self.bias1 = nn.Parameter(0 * torch.randn(FILTERS * CHANNELS))
+        # Rk = RADIUS * 2 + 1
+        # self.filter1 = nn.Parameter(torch.randn(4 * FILTERS * CHANNELS, 1, Rk, Rk) / sqrt(4 * FILTERS * CHANNELS))
+        # # self.filter1 = nn.Parameter(torch.randn(FILTERS, 4 * CHANNELS, Rk, Rk))
+        # # self.filter1 = nn.Parameter(torch.randn(1, 4 * CHANNELS * FILTERS, Rk, Rk))
+        # self.bias1 = nn.Parameter(torch.randn(FILTERS))
+        #
+        # self.filter2 = nn.Conv2d(4 * FILTERS * CHANNELS, HIDDEN, 1, padding_mode='circular')
+        # # nn.init.orthogonal_(self.filter2.weight)
+        # nn.init.zeros_(self.filter2.bias)
+        # # nn.init.zeros_(self.filter2.weight)
+        # self.filter2.weight.data.zero_()
+        # self.filter3 = nn.Conv2d(HIDDEN, CHANNELS, 1, padding_mode='circular', bias=False)
+        # # nn.init.orthogonal_(self.filter3.weight, gain=2)
+        # # nn.init.zeros_(self.filter3.bias)
+        # # nn.init.zeros_(self.filter3.weight)
+        # self.filter3.weight.data.zero_()
 
-        self.filter2 = nn.Conv2d(FILTERS * CHANNELS, HIDDEN, 1, padding_mode='circular')
-        nn.init.orthogonal_(self.filter2.weight, gain=2)
-        nn.init.zeros_(self.filter2.bias)
-        self.filter3 = nn.Conv2d(HIDDEN, CHANNELS, 1, padding_mode='circular')
-        nn.init.orthogonal_(self.filter3.weight, gain=2)
-        nn.init.zeros_(self.filter3.bias)
+        self.ident = torch.tensor([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]]).cuda()
+        self.sobel_x = torch.tensor([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]).cuda() / 8.0
+        self.lap = torch.tensor([[1.0, 2.0, 1.0], [2.0, -12, 2.0], [1.0, 2.0, 1.0]]).cuda() / 16.0
+
+        self.filters = [nn.Parameter(torch.randn(3, 3).cuda())
+                        for i in range(2)]
+
+        self.w1 = torch.nn.Conv2d(CHANNELS * 4, HIDDEN, RADIUS)
+        self.w2 = torch.nn.Conv2d(HIDDEN, CHANNELS, RADIUS, bias=False)
+        # self.w2.weight.data.zero_()
 
 
 class CA(nn.Module):
@@ -49,6 +78,27 @@ class CA(nn.Module):
 
     def initGrid(self, BS, RES):
         self.psi = torch.cuda.FloatTensor(2 * np.random.rand(BS, self.channels, RES, RES) - 1)
+
+    def seed(self, RES, n):
+        seed = torch.FloatTensor(np.zeros((n, self.channels, RES, RES)))
+        # seed[:, 3:, RES // 2, RES // 2] = 1
+        return seed
+
+    def perchannel_conv(self, x, filters):
+        '''filters: [filter_n, h, w]'''
+        b, ch, h, w = x.shape
+        y = x.reshape(b * ch, 1, h, w)
+        y = torch.nn.functional.pad(y, [1, 1, 1, 1], 'circular')
+        y = torch.nn.functional.conv2d(y, filters[:, None])
+        return y.reshape(b, -1, h, w)
+
+    def perception(self, x):
+        # filters = torch.stack([self.rule.ident, self.rule.sobel_x, self.rule.sobel_x.T, self.rule.lap])
+        filters = [self.rule.ident, self.rule.sobel_x, self.rule.sobel_x.T, self.rule.lap]
+        # custom kernels required to be the same size as the hard-coded filters for now to work
+        # totalistic_filters = [totalistic(f, dim2=True) for f in self.rule.filters]
+        # filters = torch.stack(filters + totalistic_filters)
+        return self.perchannel_conv(x, torch.stack(filters))
 
     def get_living_mask(self, x, alive_thres=0.1, dead_thres=0.5):
         alpha_channel = x[:, 3:4, :, :]
@@ -69,6 +119,7 @@ class CA(nn.Module):
         The first filter applies a depthwise convolution to the CA grid. Each channel in the filter is applied to its corresponding channel in the CA grid.
         The second and third filters are 1x1 convolutions which act to mix the channels.
         If I understand this correctly, this is essentially applying a depthwise seperable convolution operation on the input (but I am a bit uncertain).
+        PRETTY SURE THIS IS WRONG, RE-WRITE THIS!!
         '''
 
         weights = totalistic(self.rule.filter1)
@@ -77,7 +128,7 @@ class CA(nn.Module):
         R = self.radius
         # z = F.conv2d(self.psi, weight=weights, bias=bias, padding=2, groups=CHANNELS)
         self.psi = F.pad(self.psi, (R, R, R, R), 'circular')
-        z = F.conv2d(self.psi, weight=weights, bias=bias, padding=0, groups=self.channels)
+        z = F.conv2d(self.psi, weight=weights, bias=bias, padding=0)
 
         z = F.leaky_relu(z)
         z = F.leaky_relu(self.rule.filter2(z))
@@ -87,11 +138,6 @@ class CA(nn.Module):
     #         self.psi = torch.clamp(self.psi[:, :, RADIUS:-RADIUS, RADIUS:-RADIUS] + self.rule.filter3(z), 0, 1)
 
     def forward_masked(self, dt=1):
-        '''
-        The first filter applies a depthwise convolution to the CA grid. Each channel in the filter is applied to its corresponding channel in the CA grid.
-        The second and third filters are 1x1 convolutions which act to mix the channels.
-        If I understand this correctly, this is essentially applying a depthwise seperable convolution operation on the input (but I am a bit uncertain).
-        '''
 
         pre_life_mask = self.get_living_mask(self.psi)
         weights = totalistic(self.rule.filter1)
@@ -105,11 +151,50 @@ class CA(nn.Module):
         z = F.leaky_relu(self.rule.filter2(z))
 
         # self.psi = torch.tanh(self.psi[:, :, R:-R, R:-R] + dt*self.rule.filter3(z))
-        self.psi = torch.clamp(self.psi[:, :, R:-R, R:-R] + dt*self.rule.filter3(z), -1, 1)
+        self.psi = torch.clamp(self.psi[:, :, R:-R, R:-R] + dt*self.rule.filter3(z), 0, 1)
 
         post_living_mask = self.get_living_mask(self.psi)
 
         self.psi = self.psi * (pre_life_mask & post_living_mask).type(torch.cuda.FloatTensor)
+
+    # def forward_perception(self, dt=1, update_rate=0.5):
+        # b, ch, h, w = self.psi.shape
+        # pre_life_mask = self.get_living_mask(self.psi)
+        # weights = totalistic(self.rule.filter1)
+        # # weights = self.rule.filter1
+        # bias = self.rule.bias1
+        # R = self.radius
+        #
+        # y = self.perception(self.psi)
+        #
+        # y = F.pad(y, (R, R, R, R), 'circular')
+        # y = F.conv2d(y, weight=weights, bias=bias, padding=0)
+        #
+        # y = F.leaky_relu(y)
+        # y = F.leaky_relu(self.rule.filter2(y))
+        #
+        # update_mask = (torch.rand(b, 1, h, w)+update_rate).floor().cuda()
+        # y = dt * self.rule.filter3(y) * update_mask
+        # # self.psi = torch.clamp(self.psi + y, 0, 1)
+        # self.psi = self.psi + y
+        #
+        # # post_living_mask = self.get_living_mask(self.psi)
+        # #
+        # # self.psi = self.psi * (pre_life_mask & post_living_mask).type(torch.cuda.FloatTensor)
+
+    def forward_perception(self, x, dt=1, update_rate=0.5):
+        b, ch, h, w = x.shape
+        y = self.perception(x)
+
+        y = torch.relu(self.rule.w1(y))
+        y = self.rule.w2(y)
+
+        update_mask = (torch.rand(b, 1, h, w) + update_rate).floor().cuda()
+        # print(update_mask.shape, y.shape)
+        y = dt * y * update_mask
+        # self.psi = torch.clamp(self.psi + y, 0, 1)
+        return x + y
+
 
     def cleanup(self):
         del self.psi
