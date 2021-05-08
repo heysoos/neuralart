@@ -53,7 +53,7 @@ class Rule(nn.Module):
         # self.filter1 = nn.Parameter(torch.randn(1, 4 * CHANNELS * FILTERS, Rk, Rk))
         self.bias1 = nn.Parameter(0 * torch.randn(FILTERS))
 
-        self.filter2 = nn.Conv2d(FILTERS, HIDDEN, 1, padding_mode='circular')
+        self.filter2 = nn.Conv2d(1, HIDDEN, 1, padding_mode='circular')
         nn.init.orthogonal_(self.filter2.weight)
         nn.init.zeros_(self.filter2.bias)
         # nn.init.zeros_(self.filter2.weight)
@@ -200,6 +200,9 @@ class CA(nn.Module):
         # z = F.conv2d(self.psi, weight=weights, bias=bias, padding=2, groups=CHANNELS)
         z = F.pad(x, (R, R, R, R), 'circular')
         z = F.conv2d(z, weight=weights, bias=bias, padding=0)
+
+        selection_idx = torch.argmin(z.mean(dim=(2, 3)), dim=1)
+        z = z[:, [selection_idx], :, :].contiguous()
 
         z = F.leaky_relu(z)
         z = F.leaky_relu(self.rule.filter2(z))
