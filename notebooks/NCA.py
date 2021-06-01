@@ -35,11 +35,11 @@ class Rule(nn.Module):
         self.channels = CHANNELS
         self.filters = FILTERS
         self.hidden = HIDDEN
-        self.ksmooth = KSMOOTH
-        self.kcenter = KCENTER
-        self.outr = OUTR
-        self.inr = INR
-        self.gamp = GAMP
+        self.ksmooth = KSMOOTH  # kernel variance
+        self.kcenter = KCENTER  # kernel center
+        self.outr = OUTR  # outer radius
+        self.inr = INR  # inner radius
+        self.gamp = GAMP  # guassian kernel amplitude
 
         # toggle options
         self.totalistic = True
@@ -48,19 +48,30 @@ class Rule(nn.Module):
         ###########################################
         # for forward (general version)
         Rk = RADIUS * 2 + 1
-        self.filter1 = nn.Parameter(torch.randn(FILTERS, CHANNELS, Rk, Rk) / sqrt(Rk * FILTERS * CHANNELS))
+        self.filter1 = nn.Parameter(torch.randn(FILTERS, CHANNELS, Rk, Rk) / sqrt(Rk))
         # self.filter1 = nn.Parameter(torch.randn(FILTERS, 4 * CHANNELS, Rk, Rk))
         # self.filter1 = nn.Parameter(torch.randn(1, 4 * CHANNELS * FILTERS, Rk, Rk))
         self.bias1 = nn.Parameter(0 * torch.randn(FILTERS))
 
-        self.filter2 = nn.Conv2d(1, HIDDEN, 1, padding_mode='circular')
+        self.filter2 = nn.Conv2d(FILTERS, HIDDEN, 1, padding_mode='circular')
         nn.init.orthogonal_(self.filter2.weight)
         nn.init.zeros_(self.filter2.bias)
         # nn.init.zeros_(self.filter2.weight)
         # self.filter2.weight.data.zero_()
         # self.filter2.bias = nn.Parameter(self.filter2.bias * 0.1)
+
+        self.extra_filters = []
+        for i in range(10):
+            self.extra_filters.append(nn.Conv2d(HIDDEN, HIDDEN, 1, padding_mode='circular', bias=False))
+            nn.init.orthogonal_(self.extra_filters[-1].weight)
+            # self.extra_filters.append(nn.ReLU())
+            # self.extra_filters.append(nn.Tanh())
+
+        self.extra_filters = nn.Sequential(*self.extra_filters)
+
         self.filter3 = nn.Conv2d(HIDDEN, CHANNELS, 1, padding_mode='circular', bias=False)
-        # nn.init.orthogonal_(self.filter3.weight, gain=2)
+        nn.init.orthogonal_(self.filter3.weight)
+
         # nn.init.zeros_(self.filter3.bias)
         # nn.init.zeros_(self.filter3.weight)
         # self.filter3.weight.data.zero_()
@@ -167,7 +178,7 @@ class CA(nn.Module):
         # filters = torch.stack(filters + totalistic_filters)
         return self.perchannel_conv(x, torch.stack(filters))
 
-    def get_living_mask(self, x, alive_thres=0.1, dead_thres=0.6):
+    def get_living_mask(self, x, alive_thres=0, dead_thres=0.6):
         alpha_channel = x[:, 3:4, :, :]
         R = self.radius
         alpha_channel = F.pad(alpha_channel, (R, R, R, R), mode='circular')
@@ -190,7 +201,7 @@ class CA(nn.Module):
         '''
         b, c, h, w = x.shape
         # circular/gaussian kernel mask
-        filter1 = self.rule.filter1 #* self.rule.decay_kernel
+        filter1 = self.rule.filter1 * self.rule.decay_kernel
         if self.rule.totalistic:
             filter1 = totalistic(filter1)
         weights = filter1
@@ -201,21 +212,38 @@ class CA(nn.Module):
         z = F.pad(x, (R, R, R, R), 'circular')
         z = F.conv2d(z, weight=weights, bias=bias, padding=0)
 
-        selection_idx = torch.argmin(z.mean(dim=(2, 3)), dim=1)
-        z = z[:, [selection_idx], :, :].contiguous()
+        # selection_idx = torch.argmax(z.mean(dim=(2, 3)), dim=1)
+        # z = z[:, [selection_idx], :, :].contiguous()
+
+
 
         z = F.leaky_relu(z)
-        z = F.leaky_relu(self.rule.filter2(z))
-
-
-        update_mask = (torch.rand(b, 1, h, w) + update_rate).floor().cuda()
-        z = self.rule.filter3(z) * update_mask
 
         if self.rule.use_growth_kernel:
             z = self.perchannel_conv_g(z, self.rule.growth_kernel.unsqueeze(0) )
 
+        z = F.leaky_relu(self.rule.filter2(z))
+
+        # select max/min channel per pixel
+        # selection_idx = torch.argmax(z, dim=1, keepdim=True)
+        # z = torch.gather(z, 1, selection_idx)
+
+
+        # random selection
+        # z = torch.gather(z, 1, torch.randint(z.shape[1], size=(b, 1, h, w)).cuda())
+
+        z = self.rule.extra_filters(z)
+
+        # select from top/bottom sorted channels
+        # z = torch.gather(z, 1, torch.argsort(z, dim=1))[:, -12:, :, :]
+
+        update_mask = (torch.rand(b, 1, h, w) + update_rate).floor().cuda()
+        z = self.rule.filter3(z) * update_mask
+
+
         z = x + z
-        x = torch.clamp(z, 0, 1)
+        x = torch.clamp(z, -128, 127)
+        # x = torch.clamp(z, 0, 1)
         return x
 
 
@@ -236,11 +264,13 @@ class CA(nn.Module):
         z = F.leaky_relu(z)
         z = F.leaky_relu(self.rule.filter2(z))
 
+        z = torch.gather(z, 1, torch.argsort(z, dim=1))[:, -12:, :, :]
+
         # self.psi = torch.tanh(self.psi[:, :, R:-R, R:-R] + dt*self.rule.filter3(z))
         z = self.rule.filter3(z)
         if self.rule.use_growth_kernel:
             z = self.perchannel_conv_g(z, self.rule.growth_kernel.unsqueeze(0))
-        z = torch.clamp(x + dt*z, 0, 1)
+        z = torch.clamp(x + dt*z, -127, 128)
         x = z * (pre_life_mask).type(torch.cuda.FloatTensor)
 
 
