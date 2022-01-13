@@ -43,6 +43,8 @@ class Rule(nn.Module):
         nearest_neighbours[RADIUS, RADIUS] = 0
         nearest_neighbours = nearest_neighbours.repeat(1, CHANNELS, 1, 1)
         nearest_neighbours /= nearest_neighbours.norm()
+        nearest_neighbours[0, 1, :, :] = -nearest_neighbours[0, 1, :, :]
+        nearest_neighbours[0, 2, :, :] = -nearest_neighbours[0, 2, :, :]
 
         # nearest_neighbours = torch.zeros(CHANNELS, Rk, Rk)
         # nearest_neighbours[0, ]
@@ -70,6 +72,8 @@ class Rule(nn.Module):
 
         dropout_mask = (torch.rand_like(x[0, 0]) > 0.5).unsqueeze(0).unsqueeze(0)
         flip = -2. * torch.logical_and(rand < p, dropout_mask) + 1
+
+        # flip = -2 * (rand < p) + 1
 
 
         return (x * flip)

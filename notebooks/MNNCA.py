@@ -20,10 +20,10 @@ def totalistic(x, dim2=False):
                      x.transpose(y_idx, x_idx).flip(y_idx) +
                      x.transpose(y_idx, x_idx).flip(x_idx) +
                      x.transpose(y_idx, x_idx).flip(y_idx).flip(x_idx))
-    if dim2:
-        z = z - z.mean()
-    else:
-        z = z - z.mean(x_idx).mean(y_idx).unsqueeze(y_idx).unsqueeze(x_idx)
+    # if dim2:
+    #     z = z - z.mean()
+    # else:
+    #     z = z - z.mean(x_idx).mean(y_idx).unsqueeze(y_idx).unsqueeze(x_idx)
 
     return z
 
@@ -62,18 +62,20 @@ class Rule(nn.Module):
         # coords[2] = torch.sin(5 * coords[2] * coords[2])
 
         xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
-        rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
+        rm = torch.sqrt(xm ** 2 + ym ** 2).cuda().unsqueeze(0).unsqueeze(0)
         null = torch.zeros_like(rm).cuda()
+        condition = (rm < 0.9) & (rm > 0.2)
 
         kernels = []
         for i in range(FILTERS):
             coords[-1] = zscale*torch.randn(1, dim_z).cuda()
             # k = (self.cppn.forward(coords, Rk, Rk).reshape(1, Rk, Rk, dim_c).permute(0, 3, 1, 2) > 0.9).type(torch.cuda.FloatTensor)
             k = (self.cppn.forward(coords, Rk, Rk).reshape(1, Rk, Rk, dim_c).permute(0, 3, 1, 2))
-            k = k.repeat((1, CHANNELS, 1, 1))
-            k = torch.where(rm < 0.9, k, null)
-            k = k - k.mean(dim=2, keepdim=True).mean(dim=3, keepdim=True)
-            k = torch.where(rm < 0.9, k, null)
+            k = torch.where(condition, k, null)
+            k[condition] -= k[condition].sum() / k[condition].numel()  # subtract inner-circle mean from inner-circle
+            k = k.repeat((1, CHANNELS, 1, 1)) * 10.
+            # k = k - k.mean(dim=2, keepdim=True).mean(dim=3, keepdim=True)
+            # k = torch.where(rm < 0.9, k, null)
             # k = k * (k.abs() > 0.5).type(torch.cuda.FloatTensor)
             # k = k / k.norm()
             kernels.append(nn.Parameter(k))
@@ -139,6 +141,20 @@ class CA(nn.Module):
         # seed[:, 3:, RES // 2, RES // 2] = 1
         return seed
 
+    def get_living_mask(self, x, alive_thres=0, dead_thres=0.6):
+        alpha_channel = x[:, 3:4, :, :]
+        R = self.radius // 2
+        alpha_channel = F.pad(alpha_channel, (R, R, R, R), mode='circular')
+
+        alive_mask = F.max_pool2d(alpha_channel, kernel_size=2 * R + 1, stride=1, padding=R) > alive_thres
+        alive_mask = alive_mask[:, :, R:-R, R:-R]
+
+        # death_mask = F.avg_pool2d(alpha_channel, kernel_size=2 * R + 1, stride=1, padding=R) < dead_thres
+        # death_mask = death_mask[:, :, R:-R, R:-R]
+        # return alive_mask & death_mask
+
+        return alive_mask
+
     def forward(self, x, update_rate=1):
         # circular/gaussian kernel mask
         kernels = self.rule.kernels
@@ -169,8 +185,8 @@ class CA(nn.Module):
         #     z = F.conv2d(z, weight=kernels[i], bias=bias[i], padding=0)
         #     z = self.rule.transitions[i](z)
 
-
-        x = x + z * update_rate
+        lifemask = self.get_living_mask(x, alive_thres=0.9, dead_thres=0.6)
+        x = x + (lifemask * z)
         # deathR = 2*R
         # x = z - F.avg_pool2d(F.pad(z, (deathR, deathR, deathR, deathR), 'circular'), 2 * deathR + 1, padding=0, stride=1) * update_rate
         # z = x + (z - z.mean(dim=2, keepdim=True).mean(dim=3, keepdim=True))* update_rate

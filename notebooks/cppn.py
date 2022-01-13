@@ -76,6 +76,7 @@ class CPPN(nn.Module):
         super().__init__()
 
         self.dim_c = dim_c
+        self.dim_z = dim_z
         self.init_grid(scale, res, dim_z)  # init self.coords
 
         self.dim_in = len(self.coords)
