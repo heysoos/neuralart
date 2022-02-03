@@ -8,26 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def totalistic(x, dim2=False):
-    if dim2:
-        y_idx = 0
-        x_idx = 1
-    else:
-        y_idx = 2
-        x_idx = 3
-    z = 0.125 * (x + x.flip(y_idx) + x.flip(x_idx) + x.flip(y_idx).flip(x_idx))
-    z = z + 0.125 * (x.transpose(y_idx, x_idx) +
-                     x.transpose(y_idx, x_idx).flip(y_idx) +
-                     x.transpose(y_idx, x_idx).flip(x_idx) +
-                     x.transpose(y_idx, x_idx).flip(y_idx).flip(x_idx))
-    # if dim2:
-    #     z = z - z.mean()
-    # else:
-    #     z = z - z.mean(x_idx).mean(y_idx).unsqueeze(y_idx).unsqueeze(x_idx)
-
-    return z
-
-
 class Rule(nn.Module):
     def __init__(self, BETA=1, CHANNELS=8, RADIUS=2):
         super().__init__()
