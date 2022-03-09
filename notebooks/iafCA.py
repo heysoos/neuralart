@@ -27,31 +27,31 @@ class Rule(nn.Module):
         Rk = 2*RADIUS + 1
 
         ########## CPPN KERNEL ################
-        # cppn_net_size = [32, 32, 32]
-        # dim_z = 16
-        # dim_c = 1  # CHANNELS
-        # self.cppn = CPPN(cppn_net_size, dim_z, dim_c).cuda().eval()
-        # self.sampler = Sampler()
-        #
-        # k = self.generate_cppn_kernel()
-        #
-        # # radial kernel
-        # xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
-        # rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
-        # condition = rm < 0.8
-        # null = torch.zeros_like(rm).cuda()
-        # k = torch.where(condition, k, null)
-        #
-        # self.nearest_neighbours = nn.Parameter(k, requires_grad=False)
+        cppn_net_size = [32, 32, 32]
+        dim_z = 16
+        dim_c = 1  # CHANNELS
+        self.cppn = CPPN(cppn_net_size, dim_z, dim_c).cuda().eval()
+        self.sampler = Sampler()
+
+        k = self.generate_cppn_kernel()
+
+        # radial kernel
+        xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
+        rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
+        condition = rm < 0.8
+        null = torch.zeros_like(rm).cuda()
+        k = torch.where(condition, k, null)
+
+        self.nearest_neighbours = k
         ###########################################
 
         ########## NEAREST NEIGHBOUr KERNEL ################
-        nearest_neighbours = torch.ones(1, 1, Rk, Rk).cuda()
-        nearest_neighbours[:, :, RADIUS, RADIUS] = 0
-        nearest_neighbours = nearest_neighbours * 0.1
-        nearest_neighbours = nearest_neighbours * (torch.rand_like(nearest_neighbours) > 0.9)
-
-        self.nearest_neighbours = nearest_neighbours
+        # nearest_neighbours = torch.ones(1, 1, Rk, Rk).cuda()
+        # nearest_neighbours[:, :, RADIUS, RADIUS] = 0
+        # nearest_neighbours = nearest_neighbours * 0.1
+        # nearest_neighbours = nearest_neighbours * (torch.rand_like(nearest_neighbours) > 0.9)
+        #
+        # self.nearest_neighbours = nearest_neighbours
         ###########################################
 
 
@@ -92,7 +92,7 @@ class Rule(nn.Module):
         E = E + self.energy_recovery * (self.target_energy - E) - (S * self.spike_cost)
         R = (R + 1) * (1 - S)
         A = A - A/200 + S
-        T = T + 0.01 * (A - self.target_rate)
+        T = T + 0.01 * (A - self.target_rate_mat)
         T = torch.maximum(T, self.minimum_threshold * torch.ones_like(T))
         V = V * (1 - S)
 
@@ -114,6 +114,7 @@ class iafCA(nn.Module):
         xm, ym = torch.meshgrid(torch.linspace(-1, 1, shape[0]), shape[1] / shape[0] * torch.linspace(-1, 1, shape[1]))
         self.rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
         self.rule.EI = ((torch.rand(1, 1, shape[0], shape[1]) < self.rule.excite_prob) * 2. - 1).cuda()
+        self.rule.target_rate_mat = self.rule.target_rate * torch.ones_like(self.rule.EI)
         return torch.cat([rand.cuda(), self.rule.EI], axis=1)
 
     def forward(self, x):
