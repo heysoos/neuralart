@@ -13,15 +13,16 @@ class Rule(nn.Module):
     def __init__(self, CHANNELS=2, RADIUS=1):
         super().__init__()
 
-        self.kpow = 0.1
-        # self.kernel = make_kernel(pow=self.kpow)
+        self.kpow = 0.2
+        self.kernel = make_kernel(pow=self.kpow)
+
+        self.radius = RADIUS
 
         ###########################################
         # init CPPN to generate kernels
         self.channels = CHANNELS
-        self.radius = RADIUS
 
-        cppn_net_size = [32, 32, 32]
+        cppn_net_size = [32, 128, 128, 32]
         dim_z = 16
         dim_c = CHANNELS
         self.cppn = CPPN(cppn_net_size, dim_z, dim_c).cuda().eval()
@@ -42,9 +43,23 @@ class Rule(nn.Module):
         # coords[1] = 10 + coords[2] / 2
         # coords[2] = 10 + 5 * coords[2]
 
-        k = self.cppn.forward(coords, Rk, Rk).reshape(1, Rk, Rk, self.cppn.dim_c).permute(3, 0, 1, 2)
-        k = k / k.sum()
-        k = k - k.mean()
+        x_orig = coords[0]
+        coords[0] = coords[2]
+        coords[1] = coords[2]
+        coords[2] = coords[2]
+
+
+        with torch.no_grad():
+            k = self.cppn.forward(coords, Rk, Rk).reshape(1, Rk, Rk, self.cppn.dim_c).permute(3, 0, 1, 2)
+
+            # k = torch.stack([ck / (coords[2].reshape(Rk, Rk) + 1e-6) for ck in k], dim=0)
+            # k[..., self.radius, self.radius] = 0.
+            k = k * x_orig.reshape(1, 1, Rk, Rk)
+
+            k = torch.stack([ck / (0.5 * ck.abs().sum() + 1e-6) for ck in k], dim=0)
+            k = torch.stack([ck - ck.mean() for ck in k], dim=0)
+            k = torch.cat([k, -k.permute(0, 1, 3, 2)], dim=0)
+            # k = torch.cat([k, -k.flip(2, 3)], dim=0)
         return k
 
 
@@ -52,7 +67,13 @@ class Rule(nn.Module):
         # Update force
         kernel_constant = self.kernel.abs().sum() ** -1.
         force_norm = force.norm(p=2, dim=0, keepdim=True)
-        force_delta = conv_pad(A * mass + force_norm, self.kernel, padding=self.radius).permute(1, 0, 2, 3) - force
+        new_force = conv_pad(A * mass + force_norm, self.kernel, padding=self.radius).permute(1, 0, 2, 3)
+        # new_force = torch.cat([new_force[:2].mean(dim=0, keepdim=True), new_force[2:].mean(dim=0, keepdim=True)])
+        new_force = torch.cat(
+            [new_force[:self.channels].sum(dim=0, keepdim=True),
+             new_force[self.channels:].mean(dim=0,keepdim=True)]
+        )
+        force_delta = new_force - force
         force = force + force_delta * kernel_constant
 
         # Update momentum
@@ -135,7 +156,7 @@ def make_directions(device="cuda"):
     return directions
 
 def make_kernel(x_mul=1.0, y_mul=1.0, pow=0.2, swap=False, device="cuda"):
-    grid = torch.tensor([-2.0, 0.0, 1.0], device=device)
+    grid = torch.tensor([-1.0, 0.0, 1.0], device=device)
     grid_x, grid_y = torch.meshgrid(grid, grid)
     d = (grid_x ** 2 + grid_y ** 2).sqrt()
     d = torch.where(torch.isclose(d, torch.zeros(())), d.new_zeros(()), 1.0 / d)
@@ -148,9 +169,64 @@ def make_kernel(x_mul=1.0, y_mul=1.0, pow=0.2, swap=False, device="cuda"):
     else:
         kernel = torch.stack([grid_y, grid_x], dim=0).reshape(2, 1, 3, 3)
 
-
-
     return kernel.to(device)
+
+
+# def make_kernel(pow=None, device="cuda"):
+    # return torch.tensor([[[-0.51608807, -0.3649294,  0.],
+    #                       [-0.3649294,  0.,  0.3649294],
+    #                       [0.,  0.3649294,  0.51608807]],
+    #                      [[0., -0.3649294, -0.51608807],
+    #                       [0.3649294,  0., -0.3649294],
+    #                       [0.51608807,  0.3649294,  0.]]], dtype=torch.float32).to(device).unsqueeze(1)
+
+    # return torch.tensor([[[-0.51608807, -0.3649294, 0.],
+    #                       [-0.3649294, 0., 0.3649294],
+    #                       [0., 0.3649294, 0.51608807]],
+    #                      [[-0., 0.3649294, 0.51608807],
+    #                       [-0.3649294, 0., 0.3649294],
+    #                       [-0.51608807, -0.3649294, 0.]]], dtype=torch.float32).to(device).unsqueeze(1)
+
+    # return torch.tensor([[[-0.3649294, .51608807, -0.3649294],
+    #            [0., 0., 0.],
+    #            [0.3649294, -.51608807, 0.3649294]],
+    #           [[0.3649294, 0., -0.3649294],
+    #            [-0.51608807, 0., 0.51608807],
+    #            [0.3649294, 0., -0.3649294]]], dtype=torch.float32).to(device).unsqueeze(1)
+
+    # return torch.tensor([[[-0.3649294, .51608807, -0.3649294],
+    #                       [0., 0., 0.],
+    #                       [0.3649294, -.51608807, 0.3649294]],
+    #                      [[-0.51608807, -0.3649294,  0.],
+    #                       [-0.3649294,  0.,  0.3649294],
+    #                       [0.,  0.3649294,  0.51608807]]], dtype=torch.float32).to(device).unsqueeze(1)
+
+    # return torch.tensor([[[.51, .51, .51],
+    #                       [0., 0., 0.],
+    #                       [0., 0., 0.]],
+    #                      [[-0.51608807, -0.3649294, 0.],
+    #                       [-0.3649294,  0.,  0.3649294],
+    #                       [0.,  0.3649294,  0.51608807]],
+    #                      [[0., 0, 0.3649294],
+    #                       [0., 0., 0.51608807],
+    #                       [0., 0., 0.3649294]],
+    #                      [[0.,  0.3649294,  0.51608807],
+    #                       [-0.3649294,  0.,  0.3649294],
+    #                       [-0.51608807, -0.3649294, 0.]]], dtype=torch.float32).to(device).unsqueeze(1)
+
+    # return torch.tensor([[[0., 0.3649294, 0.],
+    #                           [0.3649294, -0.51608807, 0.3649294],
+    #                           [0., 0.3649294, 0.]],
+    #                          [[-0.51608807, -0.3649294, 0.],
+    #                           [-0.3649294,  0.,  0.3649294],
+    #                           [0.,  0.3649294,  0.51608807]],
+    #                          [[0., -0.3649294, 0.],
+    #                           [-0.3649294, 0.51608807, -0.3649294],
+    #                           [0., -0.3649294, 0.]],
+    #                          [[0.,  0.3649294,  0.51608807],
+    #                           [-0.3649294,  0.,  0.3649294],
+    #                           [-0.51608807, -0.3649294, 0.]]], dtype=torch.float32).to(device).unsqueeze(1)
+
 
 def min_max(input: torch.Tensor) -> torch.Tensor:
     return (input - input.min()) / (input.max() - input.min())
