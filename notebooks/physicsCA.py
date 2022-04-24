@@ -13,25 +13,29 @@ class Rule(nn.Module):
     def __init__(self, CHANNELS=2, RADIUS=1):
         super().__init__()
 
+        # for make_kernel
         self.kpow = 0.2
         self.kernel = make_kernel(pow=self.kpow)
 
+        # for cppn
         self.radius = RADIUS
+        self.channels = CHANNELS
 
         ###########################################
         # init CPPN to generate kernels
-        self.channels = CHANNELS
-
-        cppn_net_size = [32, 128, 128, 32]
-        dim_z = 16
-        dim_c = CHANNELS
-        self.cppn = CPPN(cppn_net_size, dim_z, dim_c).cuda().eval()
-        self.sampler = Sampler()
-        self.kernel = self.generate_cppn_kernel()
+        self.generate_cppn()
         ###########################################
 
         self.moves = make_moves()
         self.directions = make_directions()
+
+    def generate_cppn(self):
+        cppn_net_size = [32, 32, 32]
+        dim_z = 16
+        dim_c = self.channels
+        self.cppn = CPPN(cppn_net_size, dim_z, dim_c).cuda().eval()
+        self.sampler = Sampler()
+        self.generate_cppn_kernel()
 
     def generate_cppn_kernel(self):
         scale = 5
@@ -43,10 +47,16 @@ class Rule(nn.Module):
         # coords[1] = 10 + coords[2] / 2
         # coords[2] = 10 + 5 * coords[2]
 
-        x_orig = coords[0]
-        coords[0] = coords[2]
-        coords[1] = coords[2]
-        coords[2] = coords[2]
+        x_orig = coords[0:1][0]
+        y_orig = coords[1:2][0]
+        r_orig = coords[2:3][0]
+        falloff_coord = r_orig
+        alpha = torch.rand(1).cuda()
+        falloff_coord = alpha / (falloff_coord ** 2 + 1e-6) - (1 - alpha) * falloff_coord
+
+        coords[0] = torch.sin(y_orig)
+        coords[1] = y_orig
+        # coords[2] = coords[1]
 
 
         with torch.no_grad():
@@ -54,27 +64,41 @@ class Rule(nn.Module):
 
             # k = torch.stack([ck / (coords[2].reshape(Rk, Rk) + 1e-6) for ck in k], dim=0)
             # k[..., self.radius, self.radius] = 0.
-            k = k * x_orig.reshape(1, 1, Rk, Rk)
+            k = (k + k.flip(2, 3)) / 2
 
-            k = torch.stack([ck / (0.5 * ck.abs().sum() + 1e-6) for ck in k], dim=0)
+            #k = torch.stack([ck / (ck.norm() + 1e-6) for ck in k], dim=0)
             k = torch.stack([ck - ck.mean() for ck in k], dim=0)
-            k = torch.cat([k, -k.permute(0, 1, 3, 2)], dim=0)
             # k = torch.cat([k, -k.flip(2, 3)], dim=0)
-        return k
+            #k[..., self.radius, self.radius] = 0.
+            # k = torch.stack([ck / (Rk) for ck in k], dim=0)
+            parity_matrix = torch.sign(x_orig.reshape(1, 1, Rk, Rk)) * ((x_orig.reshape(1, 1, Rk, Rk).abs() > 1e-6))
+            falloff_matrix = (falloff_coord).reshape(1, 1, Rk, Rk)
+            k = (k * falloff_matrix) * parity_matrix
+            # k[..., self.radius, self.radius] = 0.
+
+            k = torch.cat([k, k.permute(0, 1, 3, 2)], dim=0)
+
+            self.kernel = k
 
 
-    def forward(self, mass, momentum, force, A, dt=1., temp=1e-1):
+    def forward(self, mass, momentum, force, A, dt=1., temp=1e-1, fdelta=0.1):
         # Update force
         kernel_constant = self.kernel.abs().sum() ** -1.
-        force_norm = force.norm(p=2, dim=0, keepdim=True)
-        new_force = conv_pad(A * mass + force_norm, self.kernel, padding=self.radius).permute(1, 0, 2, 3)
+
+        #force_norm = force.norm(p=2, dim=0, keepdim=True)
+        #new_force = conv_pad(A * mass + force_norm, self.kernel, padding=self.radius).permute(1, 0, 2, 3)
+
+        new_force = conv_pad(A * mass, self.kernel, padding=self.radius).permute(1, 0, 2, 3)
+
         # new_force = torch.cat([new_force[:2].mean(dim=0, keepdim=True), new_force[2:].mean(dim=0, keepdim=True)])
+
         new_force = torch.cat(
             [new_force[:self.channels].sum(dim=0, keepdim=True),
-             new_force[self.channels:].mean(dim=0,keepdim=True)]
+             new_force[self.channels:].sum(dim=0, keepdim=True)]
         )
         force_delta = new_force - force
-        force = force + force_delta * kernel_constant
+        #force = force + force_delta * kernel_constant
+        force = (1 - fdelta) * force + fdelta * force_delta
 
         # Update momentum
         momentum = torch.where(mass < 1e-8, momentum.new_zeros(()), momentum + force * dt)
@@ -102,8 +126,8 @@ class physicsCA(nn.Module):
         super().__init__()
         self.rule = Rule(CHANNELS=CHANNELS, RADIUS=RADIUS)
 
-    def forward(self, mass, momentum, force, A, dt=1., temp=1e-1):
-        return self.rule(mass, momentum, force, A, dt, temp)
+    def forward(self, mass, momentum, force, A, dt=1., temp=1e-1, fdelta=0.1):
+        return self.rule(mass, momentum, force, A, dt, temp, fdelta)
 
 def conv_pad(
     input: torch.Tensor, weight: torch.Tensor, padding: int = 1
