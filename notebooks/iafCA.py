@@ -12,8 +12,11 @@ class Rule(nn.Module):
     def __init__(self, RADIUS=2):
         super().__init__()
         self.radius = RADIUS
+
+        self.integration_constant = 20.
+        self.decay_constant = 0.2
+
         # self.threshhold = 0.68
-        self.minimum_threshold = 0.
         self.refractor_time = 5
         self.target_rate = 5
 
@@ -38,11 +41,14 @@ class Rule(nn.Module):
         # radial kernel
         xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
         rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
-        condition = rm < 0.8
+        condition = rm < 1.
         null = torch.zeros_like(rm).cuda()
         k = torch.where(condition, k, null)
 
-        self.nearest_neighbours = k
+        # sparsity
+        spars_mat = (torch.rand_like(k) > 0.8) * 1.
+
+        self.nearest_neighbours = k * spars_mat
         ###########################################
 
         ########## NEAREST NEIGHBOUr KERNEL ################
@@ -76,24 +82,22 @@ class Rule(nn.Module):
         x[:, [0], ...] = x[:, [0], ...] * self.EI
         S = F.pad(x[:, [0], ...], (Rk, Rk, Rk, Rk), mode='circular') #spikes
         V = x[:, [1], ...] # voltages
-        R = x[:, [2], ...] + ((torch.rand_like(V) > 0.5) * 2. - 1.) # refractory time
+        R = x[:, [2], ...] # + ((torch.rand_like(V) > 0.5) * 2. - 1.) # refractory time
         A = x[:, [3], ...] # traces
         T = x[:, [4], ...] # threshold
         E = x[:, [5], ...] # energy
 
-
+        # calculate new spikes
         V = V + noise_input #
-
         I = F.conv2d(S, self.nearest_neighbours, padding=0)
-
-        V = V + 0.05 * (-V + I)
-
+        V = V + self.decay_constant * (-V + self.integration_constant * I)
         S = (V > T) * (R > self.refractor_time) * (E > self.min_energy) * 1.
+
+        # update cell properties
         E = E + self.energy_recovery * (self.target_energy - E) - (S * self.spike_cost)
         R = (R + 1) * (1 - S)
         A = A - A/200 + S
-        T = T + 0.01 * (A - self.target_rate_mat)
-        T = torch.maximum(T, self.minimum_threshold * torch.ones_like(T))
+        T = T + 0.05 * (A - self.target_rate_mat)
         V = V * (1 - S)
 
         z = torch.cat([S, V, R, A, T, E, self.EI], axis=1)
@@ -113,11 +117,14 @@ class iafCA(nn.Module):
 
         xm, ym = torch.meshgrid(torch.linspace(-1, 1, shape[0]), shape[1] / shape[0] * torch.linspace(-1, 1, shape[1]))
         self.rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
+
         self.rule.EI = ((torch.rand(1, 1, shape[0], shape[1]) < self.rule.excite_prob) * 2. - 1).cuda()
+        self.rule.EI = torch.where(self.rule.EI < 0., self.rule.EI * (1/self.rule.excite_prob), self.rule.EI)
         self.rule.target_rate_mat = self.rule.target_rate * torch.ones_like(self.rule.EI)
         return torch.cat([rand.cuda(), self.rule.EI], axis=1)
 
     def forward(self, x):
         # noise_input = (torch.rand_like(x[:, [1], ...]) > 0.9) * (self.rm > 0.5) * (self.rm - self.rm.mean())
-        noise_input = 0.
+        noise_input = (torch.rand_like(x[:, [1], ...]) > 0.99) * 10.
+        # noise_input = 0.
         return self.rule(x, noise_input)
