@@ -17,6 +17,7 @@ class Rule(nn.Module):
         self.decay_constant = 0.2
 
         # self.threshhold = 0.68
+        self.minimum_threshold = 0.1
         self.refractor_time = 5
         self.target_rate = 5
 
@@ -46,8 +47,7 @@ class Rule(nn.Module):
         k = torch.where(condition, k, null)
 
         # sparsity
-        spars_mat = (torch.rand_like(k) > 0.8) * 1.
-
+        spars_mat = (torch.rand_like(k) > 0.0) * 1.
         self.nearest_neighbours = k * spars_mat
         ###########################################
 
@@ -79,6 +79,9 @@ class Rule(nn.Module):
     def forward(self, x, noise_input):
 
         Rk = self.radius
+
+        # pre = F.unfold(x[:, [0], ...], 1)
+
         x[:, [0], ...] = x[:, [0], ...] * self.EI
         S = F.pad(x[:, [0], ...], (Rk, Rk, Rk, Rk), mode='circular') #spikes
         V = x[:, [1], ...] # voltages
@@ -93,11 +96,20 @@ class Rule(nn.Module):
         V = V + self.decay_constant * (-V + self.integration_constant * I)
         S = (V > T) * (R > self.refractor_time) * (E > self.min_energy) * 1.
 
+        # post = F.pad(S, (Rk, Rk, Rk, Rk), mode='circular') #pre
+        # post = F.unfold(post, 2*Rk + 1)
+        # delta = (pre * post).mean(dim=2).reshape(1, 1, 2*Rk+1, 2*Rk+1)
+        # delta -= delta.mean()
+        # new_k = torch.clip(self.nearest_neighbours + 0.1*delta, min=0)
+
+        # self.nearest_neighbours = new_k / (new_k.sum() + 1e-6) * self.nearest_neighbours.sum()
+
         # update cell properties
         E = E + self.energy_recovery * (self.target_energy - E) - (S * self.spike_cost)
         R = (R + 1) * (1 - S)
-        A = A - A/200 + S
+        A = A - A/100 + S
         T = T + 0.05 * (A - self.target_rate_mat)
+        T = torch.clamp(T, min=self.minimum_threshold)
         V = V * (1 - S)
 
         z = torch.cat([S, V, R, A, T, E, self.EI], axis=1)
@@ -125,6 +137,6 @@ class iafCA(nn.Module):
 
     def forward(self, x):
         # noise_input = (torch.rand_like(x[:, [1], ...]) > 0.9) * (self.rm > 0.5) * (self.rm - self.rm.mean())
-        noise_input = (torch.rand_like(x[:, [1], ...]) > 0.99) * 10.
+        noise_input = (torch.randn_like(x[:, [1], ...]) > 0.99) * 1.
         # noise_input = 0.
         return self.rule(x, noise_input)
