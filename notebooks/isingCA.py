@@ -19,20 +19,41 @@ class Rule(nn.Module):
         xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
         rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
 
-        nearest_neighbours = torch.ones(Rk, Rk).cuda()
-        nearest_neighbours[RADIUS, RADIUS] = 0
-        nearest_neighbours = nearest_neighbours.repeat(1, CHANNELS, 1, 1)
-        nearest_neighbours /= nearest_neighbours.norm()
-        nearest_neighbours[0, 1, :, :] = -nearest_neighbours[0, 1, :, :]
-        nearest_neighbours[0, 2, :, :] = -nearest_neighbours[0, 2, :, :]
+        # nearest_neighbours = torch.ones(1, 1, Rk, Rk).cuda()
+        # nearest_neighbours[:, :, RADIUS, RADIUS] = 0
+        # nearest_neighbours[:, :, RADIUS + 1, RADIUS + 1] = 0.
+        # nearest_neighbours[:, :, RADIUS + 1, RADIUS - 1] = 0.
+        # nearest_neighbours[:, :, RADIUS - 1, RADIUS + 1] = 0.
+        # nearest_neighbours[:, :, RADIUS - 1, RADIUS - 1] = 0.
+
+        nearest_neighbours = torch.zeros(1, 1, Rk, Rk).cuda()
+        nearest_neighbours[:, :, RADIUS, RADIUS] = 0
+        nearest_neighbours[:, :, RADIUS, :] = 1.
+        nearest_neighbours[:, :, :, RADIUS] = 1.
+        nearest_neighbours[:, :, -1, -1] = -1.
+        nearest_neighbours[:, :, 0, 0] = -1.
+        nearest_neighbours[:, :, 0, -1] = -1.
+        nearest_neighbours[:, :, -1, 0] = -1.
+
+
+        # nearest_neighbours = nearest_neighbours.repeat(1, CHANNELS, 1, 1)
+
+        # nearest_neighbours /= nearest_neighbours.norm()
+        # nearest_neighbours[0, 1, :, :] = -nearest_neighbours[0, 1, :, :]
+        # nearest_neighbours[0, 2, :, :] = -nearest_neighbours[0, 2, :, :]
 
         # nearest_neighbours = torch.zeros(CHANNELS, Rk, Rk)
         # nearest_neighbours[0, ]
 
-        # nearest_neighbours = torch.randn(CHANNELS, Rk, Rk).cuda()
+        # nearest_neighbours = torch.ones(1, CHANNELS, Rk, Rk).cuda()
         # nearest_neighbours = nearest_neighbours.unsqueeze(0)
         # nearest_neighbours /= nearest_neighbours.norm()
-        # nearest_neighbours[:, :, RADIUS, RADIUS] = 0
+        # nearest_neighbours[:, :, RADIUS, RADIUS] = 0.
+        # nearest_neighbours[:, :, RADIUS + 1, RADIUS] = 0.
+        # nearest_neighbours[:, :, RADIUS - 1, RADIUS] = 0.
+        # nearest_neighbours[:, :, RADIUS, RADIUS - 1] = 0.
+        # nearest_neighbours[:, :, RADIUS, RADIUS + 1] = 0.
+
 
         self.nearest_neighbours = nn.Parameter(nearest_neighbours, requires_grad=False)
         # self.bias = nn.Parameter()
@@ -44,7 +65,7 @@ class Rule(nn.Module):
         Js = F.conv2d(s, self.nearest_neighbours, padding=0)
         delta_e = 2 * x * Js
 
-        definite_flip = delta_e < 0
+        definite_flip = delta_e <= 0
         p = torch.exp(-delta_e * self.beta)
         p = torch.where(definite_flip, torch.ones_like(x), p)
 
