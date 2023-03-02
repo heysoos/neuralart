@@ -15,89 +15,53 @@ class CPPN_block(nn.Module):
 
     def __init__(self, in_channels, out_channels):
         super().__init__()
-
         self.lin = nn.Linear(in_channels, out_channels, bias=True)
-        #         self.in_l2 = nn.Linear(out_channels, out_channels)
-
-        #         self.conv1d = nn.Conv1d(out_channels, out_channels, 5, padding=5//2)
-        #         self.conv2d = nn.Conv2d(out_channels, out_channels, 5, padding=5//2)
-
-        #         self.bnl = nn.BatchNorm1d(out_channels)
-        #         self.bnl = nn.BatchNorm2d(out_channels)
-
         self.afunc = nn.Tanh()
 
     def forward(self, x):
         x = self.lin(x)
-        #         x = self.in_l2(x)
-
-        #         x = self.conv2d(x.reshape(-1, x.shape[2], yres, xres)).reshape(-1, xres*yres, x.shape[2])
-        #         x = self.bnl(x.reshape(-1, x.shape[2], yres, xres)).reshape(-1, yres*xres, x.shape[2])
-
-        #         x = self.conv1d(x.permute(0, 2, 1))
-        #         x = self.bnl(x.permute(0, 2, 1)).permute(0, 2, 1)
-
         x = self.afunc(x)
-
         return x
 
 
 class Rule(nn.Module):
-    def __init__(self, dim_in, dim_z, dim_c, net_size):
+    def __init__(self, dim_in, dim_z, dim_c, net_size, projection_config=None):
         super().__init__()
 
-        self.in_l = [nn.Linear(1, net_size[0], bias=False).cuda() for i in range(dim_in - 1)]
-        self.in_l.append(nn.Linear(dim_z, net_size[0], bias=False).cuda())
-        self.in_l = nn.ModuleList(self.in_l)
+        if projection_config is None:
+            self.in_l = [nn.Linear(1, net_size[0], bias=False).cuda() for i in range(dim_in - 1)]
+            self.in_l.append(nn.Linear(dim_z, net_size[0], bias=False).cuda())
+            self.in_l = nn.ModuleList(self.in_l)
+        else:
+            project_dims, project_scales = projection_config
+            self.projection_mat = nn.Parameter(project_scales * torch.randn(project_dims, dim_in - 1))
+
+            self.in_coords = nn.Linear(2 * project_dims, net_size[0], bias=False).cuda()
+            self.in_z = nn.Linear(dim_z, net_size[0], bias=False).cuda()
+
+
+            self.in_l = [nn.Linear(1, net_size[0], bias=False).cuda() for i in range(dim_in - 1)]
+            self.in_l.append(nn.Linear(dim_z, net_size[0], bias=False).cuda())
 
         self.seq = []
         #         self.bnls = []
         for i in range(len(net_size) - 1):
-            #             self.seq.append((nn.Linear(net_size[i], net_size[i + 1])))
-            #             if (i + 1) % 3 == 0:
-            #                 self.bnls.append(nn.BatchNorm1d(net_size[i]))
-            #             self.seq.append(nn.Tanh())
             self.seq.append(CPPN_block(in_channels=net_size[i], out_channels=net_size[i + 1]))
-
-        #             self.seq.append(nn.Conv2d(net_size[i], net_size[i + 1], 3, padding=1, padding_mode='reflect'))
-        #             self.seq.append(nn.ReLU())
-
         self.seq.append(nn.Linear(net_size[-1], dim_c, bias=False))
         self.seq.append(nn.Sigmoid())
-
         self.seq = nn.ModuleList(self.seq)
-
-
-#         self.bnls = nn.ModuleList(self.bnls)
-
-
 class CPPN(nn.Module):
-    def __init__(self, net_size=[32, 32, 32], dim_z=16, dim_c=3, scale=5, res=512):
+    def __init__(self, net_size=[32, 32, 32], dim_z=16, dim_c=3, scale=5, res=512, projection_config=None):
         super().__init__()
 
         self.dim_c = dim_c
         self.dim_z = dim_z
         self.init_grid(scale, res, dim_z)  # init self.coords
+        self.projection_config = projection_config
 
         self.dim_in = len(self.coords)
-        #         self.ls_coords = [nn.Linear(1, net_size[0], bias=False).cuda() for i in range(self.dim_in - 1)]
-        #         self.ls_coords.append(nn.Linear(dim_z, net_size[0], bias=False).cuda())  # the layer for the latent-vector z
 
-        #         modules = []
-        #         modules.append(nn.Tanh())
-        #         for i in range(len(net_size) - 1):
-        #             modules.append(nn.Linear(net_size[i], net_size[i + 1]))
-        #             modules.append(nn.Tanh())
-
-        #         modules.append(nn.Linear(net_size[-1], dim_c))
-        #         modules.append(nn.Sigmoid())
-
-        self.rule = Rule(self.dim_in, dim_z, self.dim_c, net_size)
-        #         self.ls_coords = self.rule.in
-        #         self.seq = nn.Sequential(*self.rule.seq)
-
-        #         self.seq = nn.Sequential(*modules)
-        #         self.modules = nn.ModuleList((self.ls_coords + modules))
+        self.rule = Rule(self.dim_in, dim_z, self.dim_c, net_size, projection_config=projection_config)
 
         self.apply(weights_init)
 
@@ -151,37 +115,18 @@ class CPPN(nn.Module):
             coords = self.coords
 
         #         U = [self.rule.in_l[i](torch.cuda.FloatTensor(coord)) for i, coord in enumerate(coords)]
-        U = [self.rule.in_l[i](coord) for i, coord in enumerate(coords)]
+        if self.projection_config is None:
+            U = [self.rule.in_l[i](coord) for i, coord in enumerate(coords)]
+            U = sum(U)
+        else:
+            U = torch.cat(coords[:-1], dim=-1) @ self.rule.projection_mat.T
+            U = torch.cat([torch.cos(U**2), torch.sin(U**2)], dim=-1)
+            U = self.rule.in_coords(U) + self.rule.in_z(coords[-1])
 
-        U = sum(U)
         U = torch.tanh(U)
 
         # linear layers
         out = nn.Sequential(*self.rule.seq)(U)
-
-        #         out = self.rule.seq[0](U)
-        #         seq = self.rule.seq[1:]
-        #         bnl_counter = 0
-        #         layer_counter = 0
-        #         for i in range(0, len(seq)):
-        #             out = self.rule.seq[i](out)
-        #             if type(self.rule.seq[i]) == nn.Linear:
-        #                 layer_counter += 1
-        #             print(f'layer_counter: {layer_counter}')
-        #             if (layer_counter + 1) % 3 == 0:
-        #                 print(f'i: {i}')
-        #                 print(out.shape)
-        #                 out = out.permute(0, 2, 1)
-        #                 print(out.shape)
-        #                 out = self.rule.bnls[bnl_counter](out)
-        #                 out = out.permute(0, 2, 1)
-        #                 bnl_counter += 1
-
-        # if using convs
-        #         U = U.permute(0, 2, 1).reshape(U.shape[0], -1, yres, xres)
-        #         out = nn.Sequential(*self.rule.seq[:-2])(U)
-        #         out = out.permute(0, 2, 3, 1).reshape(out.shape[0], -1, out.shape[1])
-        #         out = nn.Sequential(*self.rule.seq[-2:])(out)
 
         return out
 
