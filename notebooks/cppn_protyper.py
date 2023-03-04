@@ -34,14 +34,39 @@ class Rule(nn.Module):
             self.in_l = nn.ModuleList(self.in_l)
         else:
             project_dims, project_scales = projection_config
-            self.projection_mat = nn.Parameter(project_scales * torch.randn(project_dims, dim_in - 1))
+            # self.projection_mat = nn.Parameter(project_scales * torch.randn(project_dims, dim_in - 1))
+            # self.projection_bias = nn.Parameter(project_scales * torch.randn(project_dims * 2))
+            # self.in_coords = nn.Linear(2 * project_dims, net_size[0], bias=False).cuda()
+            # self.in_z = nn.Linear(dim_z, net_size[0], bias=False).cuda()
 
-            self.in_coords = nn.Linear(2 * project_dims, net_size[0], bias=False).cuda()
+            # self.projection_layers = [nn.Linear(project_scales[i] * torch.randn(project_dims[i], dim_in - 1))
+            #                           for i in range(len(project_scales))]
+
+            self.frequencies = nn.Parameter(torch.rand(2, 1, 1, project_dims[-1]) * project_scales[-1])
+            self.phases = nn.Parameter(torch.rand(2, 1, 1, project_dims[-1]) * project_scales[-1])
+            self.projection_seq = [nn.Linear(dim_in - 1, project_dims[0])]
+            self.projection_seq[0].weight.data.normal_(0, std=project_scales[0])
+            self.projection_seq[0].bias.data.normal_(0, std=project_scales[0])
+            # self.projection_seq.append(nn.Tanh())
+
+            for i in range(len(project_dims) - 1):
+                self.projection_seq.append(nn.Linear(project_dims[i], project_dims[i+1]))
+
+                self.projection_seq[-1].weight.data.normal_(0, std=project_scales[i + 1])
+                self.projection_seq[-1].bias.data.normal_(0, std=project_scales[i + 1])
+
+                # self.projection_seq.append(nn.Tanh())
+            self.projection_seq = nn.Sequential(*self.projection_seq)
+            # do something with projection scales here/apply weights:
+
+            self.in_coords = nn.Linear(2 * project_dims[-1], net_size[0], bias=False).cuda()
             self.in_z = nn.Linear(dim_z, net_size[0], bias=False).cuda()
 
 
-            self.in_l = [nn.Linear(1, net_size[0], bias=False).cuda() for i in range(dim_in - 1)]
-            self.in_l.append(nn.Linear(dim_z, net_size[0], bias=False).cuda())
+
+
+            # self.in_l = [nn.Linear(1, net_size[0], bias=False).cuda() for i in range(dim_in - 1)]
+            # self.in_l.append(nn.Linear(dim_z, net_size[0], bias=False).cuda())
 
         self.seq = []
         #         self.bnls = []
@@ -50,6 +75,8 @@ class Rule(nn.Module):
         self.seq.append(nn.Linear(net_size[-1], dim_c, bias=False))
         self.seq.append(nn.Sigmoid())
         self.seq = nn.ModuleList(self.seq)
+
+        self.seq.apply(weights_init)
 class CPPN(nn.Module):
     def __init__(self, net_size=[32, 32, 32], dim_z=16, dim_c=3, scale=5, res=512, projection_config=None):
         super().__init__()
@@ -63,7 +90,7 @@ class CPPN(nn.Module):
 
         self.rule = Rule(self.dim_in, dim_z, self.dim_c, net_size, projection_config=projection_config)
 
-        self.apply(weights_init)
+        # self.apply(weights_init)
 
     def _coordinates(self, scale, xres, yres, z, flatten=True, batch_size=1, num_nulls=3):
 
@@ -107,8 +134,7 @@ class CPPN(nn.Module):
         if empty_cache:
             torch.cuda.empty_cache()
 
-        self.apply(weights_init)
-
+        self.rule.seq.apply(weights_init)
     def forward(self, coords, xres, yres):
 
         if coords is None:
@@ -119,11 +145,18 @@ class CPPN(nn.Module):
             U = [self.rule.in_l[i](coord) for i, coord in enumerate(coords)]
             U = sum(U)
         else:
-            U = torch.cat(coords[:-1], dim=-1) @ self.rule.projection_mat.T
-            U = torch.cat([torch.cos(U**2), torch.sin(U**2)], dim=-1)
+            # U = torch.cat(coords[:-1], dim=-1) @ self.rule.projection_mat.T
+            # U = torch.cat([torch.cos(U), torch.sin(U)], dim=-1)
+            # U = self.rule.in_coords(U) + self.rule.in_z(coords[-1])
+
+            U = self.rule.projection_seq(torch.cat(coords[:-1], dim=-1))
+            U = torch.cat([
+                torch.cos(U * self.rule.frequencies[0] + self.rule.phases[0]),
+                torch.sin(U * self.rule.frequencies[1] + self.rule.phases[1])],
+                dim=-1)
             U = self.rule.in_coords(U) + self.rule.in_z(coords[-1])
 
-        U = torch.tanh(U)
+        # U = torch.tanh(U)
 
         # linear layers
         out = nn.Sequential(*self.rule.seq)(U)
@@ -401,7 +434,6 @@ def weights_init(m):
         if m.bias is not None:
             stdv = 1. / np.sqrt(m.weight.size(1))
             m.bias.data.uniform_(-stdv, stdv)
-
 
 #             m.bias.data.fill_(0)
 #     classname = m.__class__.__name__
