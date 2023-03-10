@@ -19,50 +19,20 @@ class Rule(nn.Module):
         self.temp_adapt = False
         self.alpha = 1e-1  # update rate
         self.h = 1e-1  # magnetization coef (growth coef)
-        self.eps = 1e-2  # decay coef
-        self.D = 1  # diffusion coef
+        self.eps = 2.025e-2  # decay coef
+        self.D = 2. * self.eps  # diffusion coef
 
-        xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
-        rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
-
-        # nearest_neighbours = torch.ones(1, 1, Rk, Rk).cuda()
-        # nearest_neighbours[:, :, RADIUS, RADIUS] = 0
-        # nearest_neighbours[:, :, RADIUS + 1, RADIUS + 1] = 0.
-        # nearest_neighbours[:, :, RADIUS + 1, RADIUS - 1] = 0.
-        # nearest_neighbours[:, :, RADIUS - 1, RADIUS + 1] = 0.
-        # nearest_neighbours[:, :, RADIUS - 1, RADIUS - 1] = 0.
+        self.m_pow = 2.
+        self.temp_pow = 1.
+        self.temp_kernel_size = 2
 
         nearest_neighbours = torch.zeros(1, CHANNELS, Rk, Rk).cuda()
-        nearest_neighbours[:, :, RADIUS, RADIUS] = 0
+
         nearest_neighbours[:, :, RADIUS, :] = 1.
         nearest_neighbours[:, :, :, RADIUS] = 1.
-        # nearest_neighbours[:, :, -1, -1] = -1.
-        # nearest_neighbours[:, :, 0, 0] = -1.
-        # nearest_neighbours[:, :, 0, -1] = -1.
-        # nearest_neighbours[:, :, -1, 0] = -1.
-
-
-        # nearest_neighbours = nearest_neighbours.repeat(1, CHANNELS, 1, 1)
-
-        # nearest_neighbours /= nearest_neighbours.norm()
-        # nearest_neighbours[0, 1, :, :] = -nearest_neighbours[0, 1, :, :]
-        # nearest_neighbours[0, 2, :, :] = -nearest_neighbours[0, 2, :, :]
-
-        # nearest_neighbours = torch.zeros(CHANNELS, Rk, Rk)
-        # nearest_neighbours[0, ]
-
-        # nearest_neighbours = torch.ones(1, CHANNELS, Rk, Rk).cuda()
-        # nearest_neighbours = nearest_neighbours.unsqueeze(0)
-        # nearest_neighbours /= nearest_neighbours.norm()
-        # nearest_neighbours[:, :, RADIUS, RADIUS] = 0.
-        # nearest_neighbours[:, :, RADIUS + 1, RADIUS] = 0.
-        # nearest_neighbours[:, :, RADIUS - 1, RADIUS] = 0.
-        # nearest_neighbours[:, :, RADIUS, RADIUS - 1] = 0.
-        # nearest_neighbours[:, :, RADIUS, RADIUS + 1] = 0.
-
+        nearest_neighbours[:, :, RADIUS, RADIUS] = 0
 
         self.nearest_neighbours = nn.Parameter(nearest_neighbours, requires_grad=False)
-        # self.bias = nn.Parameter()
 
     def forward(self, x):
 
@@ -72,7 +42,7 @@ class Rule(nn.Module):
         Rk = self.radius
 
         s_pad = F.pad(s, (Rk, Rk, Rk, Rk), mode='circular')
-        b_pad = F.pad(b, (Rk, Rk, Rk, Rk), mode='circular')
+        # b_pad = F.pad(b, (Rk, Rk, Rk, Rk), mode='circular')
 
         Js = F.conv2d(s_pad, self.nearest_neighbours, padding=0)
         delta_e = 2 * s * Js
@@ -86,12 +56,24 @@ class Rule(nn.Module):
         dropout_mask = (torch.rand_like(s[0, 0]) > 0.5).unsqueeze(0).unsqueeze(0)
         flip = -2. * torch.logical_and(rand < p, dropout_mask) + 1
 
-        if self.temp_adapt and torch.rand(1) > 0.5:
+        if self.temp_adapt and torch.rand(1) > 0.9:
+            temp_rad = self.temp_kernel_size*Rk
+            temp_kernel_size = 2*temp_rad + 1
+            pads = tuple([Rk * self.temp_kernel_size for i in range(4)])
+
             s_unfold = F.unfold(s_pad, 2*Rk + 1) # localize measurements
-            sm = (s_unfold.mean(dim=1) ** 2).reshape(shape)
-            diff_T = 1 / F.avg_pool2d(b_pad, 2*Rk + 1, stride=1)
-            T = (1. / b)
-            newT = self.h * sm ** 2 - self.eps * T + self.D * diff_T
+            sm = (s_unfold.mean(dim=1)).reshape(shape)
+
+            b_tpad = F.pad(b, pads, mode='circular')
+            T_pad = 1. / b_tpad
+            T = T_pad[..., temp_rad:-temp_rad, temp_rad:-temp_rad]
+            diff_T = (F.avg_pool2d(T_pad, temp_kernel_size, stride=1) - T)
+
+            # newT = self.h * sm ** 2 - self.eps * T + self.D * diff_T
+            deltaT = self.h * sm.abs() ** self.m_pow \
+                     - self.eps * T ** self.temp_pow +\
+                     self.D * diff_T
+            newT = T + deltaT
             newT = (1 - self.alpha) * T + self.alpha * newT
 
             b = 1 / newT
@@ -108,7 +90,7 @@ class isingCA(nn.Module):
         self.rule = Rule(BETA, CHANNELS, RADIUS)
 
     def initGrid(self, shape):
-        rand = (torch.rand(1, self.channels + 1, shape[0], shape[1]) > 0.5) * 2. - 1.
+        rand = (torch.rand(1, self.channels + 1, shape[0], shape[1]) > torch.rand(1)) * 2. - 1.
         rand[:, -1, ...] = torch.ones_like(rand[:, -1, ...]) * self.rule.beta
         return rand.cuda()
 
