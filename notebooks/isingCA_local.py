@@ -19,12 +19,12 @@ class Rule(nn.Module):
         self.temp_adapt = False
         self.alpha = 1e-1  # update rate
         self.h = 1e-1  # magnetization coef (growth coef)
-        self.eps = 2.025e-2  # decay coef
+        self.eps = 2.05e-2  # decay coef
         self.D = 2. * self.eps  # diffusion coef
 
         self.m_pow = 2.
         self.temp_pow = 1.
-        self.temp_kernel_size = 2
+        self.temp_kernel_size = 1
 
         nearest_neighbours = torch.zeros(1, CHANNELS, Rk, Rk).cuda()
 
