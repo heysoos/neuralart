@@ -52,11 +52,14 @@ class Rule(nn.Module):
         r_orig = coords[2:3][0]
         falloff_coord = r_orig
         alpha = torch.rand(1).cuda()
-        falloff_coord = alpha / (falloff_coord ** 2 + 1e-6) - (1 - alpha) * falloff_coord
+        # falloff_coord = -alpha / (falloff_coord ** 3 + 1e-6) + (1 - alpha) / (falloff_coord + 1e-6)
+        # falloff_coord = alpha / (falloff_coord ** 4 + 1e-6) - (1 - alpha) / (falloff_coord ** 2 + 1e-6)
+        # falloff_coord = torch.cos(5 * falloff_coord) * torch.exp(-falloff_coord)
+        # falloff_coord =
 
-        coords[0] = torch.sin(y_orig)
-        coords[1] = y_orig
-        # coords[2] = coords[1]
+        coords[0] = x_orig
+        coords[1] = x_orig
+        coords[2] = x_orig
 
 
         with torch.no_grad():
@@ -73,6 +76,7 @@ class Rule(nn.Module):
             # k = torch.stack([ck / (Rk) for ck in k], dim=0)
             parity_matrix = torch.sign(x_orig.reshape(1, 1, Rk, Rk)) * ((x_orig.reshape(1, 1, Rk, Rk).abs() > 1e-6))
             falloff_matrix = (falloff_coord).reshape(1, 1, Rk, Rk)
+            #falloff_matrix *= (falloff_matrix > 1e-5) * 1.
             k = (k * falloff_matrix) * parity_matrix
             # k[..., self.radius, self.radius] = 0.
 
@@ -83,25 +87,54 @@ class Rule(nn.Module):
 
     def forward(self, mass, momentum, force, A, dt=1., temp=1e-1, fdelta=0.1):
         # Update force
-        kernel_constant = self.kernel.abs().sum() ** -1.
+        #kernel_constant = self.kernel.abs().sum() ** -1.
 
-        #force_norm = force.norm(p=2, dim=0, keepdim=True)
+        # KE = (momentum ** 2 / (mass + 1e-6)).sum()
+        # PE = force.sum()
+        # E = KE + PE
+
+        force_norm = force.norm(p=2, dim=0, keepdim=True)
         #new_force = conv_pad(A * mass + force_norm, self.kernel, padding=self.radius).permute(1, 0, 2, 3)
 
+        # new_force = conv_pad(A * mass + force_norm, self.kernel, padding=self.radius).permute(1, 0, 2, 3)
         new_force = conv_pad(A * mass, self.kernel, padding=self.radius).permute(1, 0, 2, 3)
+
+        # field = conv_pad(A * mass + field, self.kernel, padding=self.radius).permute(1, 0, 2, 3)
 
         # new_force = torch.cat([new_force[:2].mean(dim=0, keepdim=True), new_force[2:].mean(dim=0, keepdim=True)])
 
-        new_force = torch.cat(
-            [new_force[:self.channels].sum(dim=0, keepdim=True),
-             new_force[self.channels:].sum(dim=0, keepdim=True)]
-        )
+        # new_force = torch.cat(
+        #     [new_force[:self.channels].sum(dim=0, keepdim=True),
+        #      new_force[self.channels:].sum(dim=0, keepdim=True)]
+        # )
+        new_force_sum = (new_force[:self.channels].abs() + new_force[self.channels:].abs())
+        idx = torch.argsort(new_force_sum, dim=0)
+        z_x = torch.gather(new_force, 0, idx)[[-1]]
+        z_y = torch.gather(new_force, 0, idx + self.channels - 1)[[-1]]
+
+
+        new_force = torch.cat([z_x, z_y])
+
+        # new_force_momentum = conv_pad(A * momentum.permute(1, 0, 2, 3), self.kernel, padding=self.radius,
+        #                               groups=2).permute(1, 0, 2, 3)
+        # new_force_momentum = torch.cat(
+        #     [new_force_momentum[:self.channels].sum(dim=0, keepdim=True),
+        #      new_force_momentum[self.channels:].sum(dim=0, keepdim=True)]
+        # )
+
         force_delta = new_force - force
         #force = force + force_delta * kernel_constant
         force = (1 - fdelta) * force + fdelta * force_delta
 
         # Update momentum
+        # PE_new = force.sum()
+        # KE_new = (momentum ** 2 / (mass + 1e-6)).sum()
+        # E_new = PE_new + KE_new
+
         momentum = torch.where(mass < 1e-8, momentum.new_zeros(()), momentum + force * dt)
+
+        # momentum *= E / E_new
+        #momentum = torch.where(mass < 1e-8, momentum.new_zeros(()), momentum + (force + 0.01*new_force_momentum) * dt)
         velocity = torch.where(mass < 1e-8, momentum.new_zeros(()), momentum / mass)
 
         # Update mass
@@ -130,13 +163,13 @@ class physicsCA(nn.Module):
         return self.rule(mass, momentum, force, A, dt, temp, fdelta)
 
 def conv_pad(
-    input: torch.Tensor, weight: torch.Tensor, padding: int = 1
+    input: torch.Tensor, weight: torch.Tensor, padding: int = 1, groups: int = 1
 ) -> torch.Tensor:
     input = torch.nn.functional.pad(
         input, [padding, padding, padding, padding], "circular"
     )
     input = torch.nn.functional.conv2d(
-        input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1
+        input, weight, bias=None, stride=1, padding=0, dilation=1, groups=groups
     )
     return input
 
@@ -253,4 +286,5 @@ def make_kernel(x_mul=1.0, y_mul=1.0, pow=0.2, swap=False, device="cuda"):
 
 
 def min_max(input: torch.Tensor) -> torch.Tensor:
-    return (input - input.min()) / (input.max() - input.min())
+    return (input - input.min()) / (input.max() - input.min() + 1e-6
+                                    )

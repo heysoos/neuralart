@@ -18,6 +18,12 @@ class Rule(nn.Module):
         self.kernel = make_kernel()
         self.decay_kernel = self.make_decay_kernel(Rk=5, KCENTER=0., KSMOOTH=0.7, OUTR=1., INR=0.)
 
+        self.v_max = 5.
+        self.attraction = 1.
+        self.repulsion = 5.
+        self.friction = 0.1
+        self.random = 1.
+
     def make_decay_kernel(self, Rk, KCENTER, KSMOOTH, OUTR, INR):
         # make a kernel of size Rk that decays like a gaussian and has a inner/outer cutoff radius
         xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
@@ -30,32 +36,50 @@ class Rule(nn.Module):
         return decay.unsqueeze(0).unsqueeze(0)
 
 
-    def forward(self, mass, trail, momentum, force, A=1., dt=.1, temp=10.):
+    def forward(self, mass, trail, momentum, force, A=1., dt=.01, temp=1.):
 
         # trail = trail - 0.1 * trail + A * F.conv2d(F.pad(trail, (2, 2, 2, 2), 'circular'), self.decay_kernel) + mass
         # trail = A * trail
         # trail = F.avg_pool2d(mass + (1 - A) * trail, 1, 1)
 
-        # shape = trail.shape
+        shape = trail.shape
         # trail[..., shape[-2]//2, shape[-1]//2] = 1e3 # food deposition
 
         trail = (trail + mass)
         trail = F.avg_pool2d(F.pad(trail, (1, 1, 1, 1), 'circular'), 3, 1)
         trail = (1 - A) * trail
 
-        # new_force = conv_pad(trail, -self.kernel, padding=1).permute(1, 0, 2, 3)
-        # force_delta = new_force - force
-        # force = force + force_delta * 0.5
+        #new_force = conv_pad(trail, -self.kernel, padding=1).permute(1, 0, 2, 3)
+        #force_delta = new_force - force
+        #force = force + force_delta * 0.5
 
         velocity = torch.where(mass < 1e-8, momentum.new_zeros(()), momentum / mass)
-        theta = torch.atan2(velocity[[0]], velocity[[1]])
+        velocity = F.unfold(velocity, 1)
 
-        force = F.pad(trail, (1, 1, 1, 1), mode='circular')
-        force = F.unfold(force, 3)
 
+        ## take only kernel contributions that align with the velocity
+        facing_kernel = F.unfold(-self.kernel, 3) * (velocity * self.directions.transpose(1, 0).unsqueeze(-1) > 0.)
+
+        new_force = self.attraction * (F.unfold(F.pad(trail, (1, 1, 1, 1), mode='circular'), 3) * facing_kernel) ## attraction
+        new_force -= self.repulsion * (F.unfold(F.pad(mass, (1, 1, 1, 1), mode='circular'), 3) * facing_kernel) ## repulsion
+        new_force -= self.friction * velocity ## friction
+        new_force += self.random * torch.randn_like(new_force) ## random
+
+        new_force = new_force.view(2,  9, shape[-2], shape[-1]).sum(dim=1, keepdim=True)
+        #force_delta = new_force - force
+        #force = force + force_delta * 0.5
+        force = new_force
 
 
         momentum = torch.where(mass < 1e-8, momentum.new_zeros(()), momentum + force * dt)
+
+        ## set speed limit
+        momentum = torch.where(
+            momentum.norm(dim=0, keepdim=True) > (self.v_max * mass),
+            self.v_max * momentum / momentum.norm(dim=0, keepdim=True),
+            momentum
+        )
+
         velocity = torch.where(mass < 1e-8, momentum.new_zeros(()), momentum / mass )
         # velocity *= torch.randn_like(velocity)
 
