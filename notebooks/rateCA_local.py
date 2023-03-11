@@ -133,8 +133,7 @@ class rateCA_local(nn.Module):
         rand = torch.rand(1, 1, shape[0], shape[1]) * 2.
         rand[0, 0] = (rand[0, 0] > 0.8) * 1.
 
-        xm, ym = torch.meshgrid(torch.linspace(-1, 1,
-                                               q[0]), shape[1] / shape[0] * torch.linspace(-1, 1, shape[1]))
+        xm, ym = torch.meshgrid(torch.linspace(-1, 1, shape[0]), shape[1] / shape[0] * torch.linspace(-1, 1, shape[1]))
         self.rm = torch.sqrt(xm ** 2 + ym ** 2).cuda()
 
         if reinit:
