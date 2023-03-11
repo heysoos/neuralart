@@ -30,10 +30,10 @@ class Rule(nn.Module):
         nearest_neighbours[:, :, RADIUS, RADIUS] = 0
         nearest_neighbours[:, :, RADIUS, :] = 1.
         nearest_neighbours[:, :, :, RADIUS] = 1.
-        nearest_neighbours[:, :, -1, -1] = -1.
-        nearest_neighbours[:, :, 0, 0] = -1.
-        nearest_neighbours[:, :, 0, -1] = -1.
-        nearest_neighbours[:, :, -1, 0] = -1.
+        # nearest_neighbours[:, :, -1, -1] = -1.
+        # nearest_neighbours[:, :, 0, 0] = -1.
+        # nearest_neighbours[:, :, 0, -1] = -1.
+        # nearest_neighbours[:, :, -1, 0] = -1.
 
 
         # nearest_neighbours = nearest_neighbours.repeat(1, CHANNELS, 1, 1)

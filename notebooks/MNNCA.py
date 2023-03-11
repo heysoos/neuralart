@@ -33,6 +33,7 @@ class Rule(nn.Module):
         super().__init__()
         self.channels = CHANNELS
         self.filters = FILTERS
+        self.radius = RADIUS
         net_size = [1] + NET_SIZE + [CHANNELS]
 
         self.modules = nn.ModuleList()
@@ -42,46 +43,14 @@ class Rule(nn.Module):
 
         ###########################################
         # init CPPN to generate kernels
-        Rk = RADIUS * 2 + 1
+
         cppn_net_size = [32, 32, 32]
-        zscale = 2
         dim_z = 16
         dim_c = 1 #CHANNELS
         self.cppn = CPPN(cppn_net_size, dim_z, dim_c).cuda().eval()
         self.sampler = Sampler()
 
-        z = torch.randn(1, dim_z).cuda()
-        coords = self.cppn._coordinates(5, Rk, Rk, z)
-
-        coords[0] = 10 + coords[2] * 2
-        coords[1] = 10 + coords[2] / 2
-        coords[2] = 10 + 5 * coords[2]
-
-        # coords[0] = coords[2] * 2
-        # coords[1] = torch.cos(coords[2] / 2)
-        # coords[2] = torch.sin(5 * coords[2] * coords[2])
-
-        xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
-        rm = torch.sqrt(xm ** 2 + ym ** 2).cuda().unsqueeze(0).unsqueeze(0)
-        null = torch.zeros_like(rm).cuda()
-        condition = (rm < 0.9) & (rm > 0.2)
-
-        kernels = []
-        for i in range(FILTERS):
-            coords[-1] = zscale*torch.randn(1, dim_z).cuda()
-            # k = (self.cppn.forward(coords, Rk, Rk).reshape(1, Rk, Rk, dim_c).permute(0, 3, 1, 2) > 0.9).type(torch.cuda.FloatTensor)
-            k = (self.cppn.forward(coords, Rk, Rk).reshape(1, Rk, Rk, dim_c).permute(0, 3, 1, 2))
-            k = torch.where(condition, k, null)
-            k[condition] -= k[condition].sum() / k[condition].numel()  # subtract inner-circle mean from inner-circle
-            k = k.repeat((1, CHANNELS, 1, 1)) * 10.
-            # k = k - k.mean(dim=2, keepdim=True).mean(dim=3, keepdim=True)
-            # k = torch.where(rm < 0.9, k, null)
-            # k = k * (k.abs() > 0.5).type(torch.cuda.FloatTensor)
-            # k = k / k.norm()
-            kernels.append(nn.Parameter(k))
-        # kernels = [(torch.randn(1, CHANNELS, Rk, Rk) > 0).type(torch.FloatTensor) for i in range(FILTERS)]
-        self.kernels = nn.ParameterList([nn.Parameter(k) for k in kernels])
-        self.bias = nn.ParameterList([nn.Parameter(0 * torch.randn(1)) for i in range(FILTERS)])
+        self.generate_kernel(self.cppn)
 
         # for each neighbourhood, generate a transition function (sequence)
         self.transitions = nn.ModuleList()
@@ -92,25 +61,76 @@ class Rule(nn.Module):
                     activation = True
                 else:
                     activation = False
-                layers.append(MNCA_block(net_size[i], net_size[i + 1], activation=activation))
+                layers.append(MNCA_block(net_size[i], net_size[i + 1], radius=1, activation=activation))
 
             seq = nn.Sequential(*layers)
             self.transitions.append(seq)
 
+    def generate_kernel(self, cppn):
+        Rk = self.radius * 2 + 1
+        dim_z = cppn.dim_z
+        dim_c = cppn.dim_c
 
+        coords = self.generate_coords(dim_z, Rk, zscale=2, scale=5)
+
+        xm, ym = torch.meshgrid(torch.linspace(-1, 1, Rk), torch.linspace(-1, 1, Rk))
+        rm = torch.sqrt(xm ** 2 + ym ** 2).cuda().unsqueeze(0).unsqueeze(0)
+        null = torch.zeros_like(rm).cuda()
+        #condition = (rm < 0.9) & (rm > 0.2)
+        condition = (rm < 0.9)
+
+        kernels = []
+        for i in range(self.filters):
+            ks = []
+            coords[-1] = 2*torch.randn(1, dim_z).cuda()
+            # k = (self.cppn.forward(coords, Rk, Rk).reshape(1, Rk, Rk, dim_c).permute(0, 3, 1, 2) > 0.9).type(torch.cuda.FloatTensor)
+            k = (self.cppn.forward(coords, Rk, Rk).reshape(1, Rk, Rk, dim_c).permute(0, 3, 1, 2))
+            k = torch.where(condition, k, null)
+            k[condition] -= k[condition].sum() / k[condition].numel()  # subtract inner-circle mean from inner-circle
+            k = k.repeat((1, self.channels, 1, 1))
+
+            # for i_k in range(self.channels):
+            #     k_ik = k[:, [i_k], ...]
+            #     k_ik = torch.where(condition, k_ik, null)
+            #     k_ik[condition] -= k_ik[condition].sum() / k_ik[condition].numel()  # subtract inner-circle mean from inner-circle
+            #     k[:, i_k, ...] = k_ik
+            #
+            # k = k - k.mean()
+
+            kernels.append(nn.Parameter(k))
+        # kernels = [(torch.randn(1, CHANNELS, Rk, Rk) > 0).type(torch.FloatTensor) for i in range(FILTERS)]
+        self.kernels = nn.ParameterList([nn.Parameter(k) for k in kernels])
+        self.bias = nn.ParameterList([nn.Parameter(0 * torch.randn(1)) for i in range(self.filters)])
+
+    def generate_coords(self, dim_z, Rk, zscale=1, scale=5):
+
+        z = zscale * torch.randn(1, dim_z).cuda()
+        coords = self.cppn._coordinates(scale, Rk, Rk, z)
+
+        coords[0] = 10 + coords[2] * 2
+        coords[1] = 10 + coords[2] / 2
+        coords[2] = 10 + 5 * coords[2]
+
+        # coords[0] = coords[2] * 2
+        # coords[1] = torch.cos(coords[2] / 2)
+        # coords[2] = torch.sin(5 * coords[2] * coords[2])
+
+        return coords
         ###########################################
+
 
 class MNCA_block(nn.Module):
 
-    def __init__(self, in_channels, out_channels, activation=True):
+    def __init__(self, in_channels, out_channels, radius, activation=True):
         super().__init__()
         self.PrecisionValue = torch.floor(torch.tensor([2 ** 31 / (128)])).cuda()
         self.activation = activation
-        self.conv = nn.Conv2d(in_channels, out_channels, 1, padding_mode='circular', bias=False)
+        self.conv = nn.Conv2d(in_channels, out_channels, 2*radius+1, padding_mode='circular', padding=radius, bias=False)
         nn.init.orthogonal_(self.conv.weight)
         # nn.init.normal_(layers[-1].weight)
         # nn.init.sparse_(layers[-1].weight, sparsity=0.9, std=1)
         self.afunc = nn.Tanh()
+        # self.afunc = nn.ReLU()
 
     def forward(self, x):
         x = torch.floor(x * self.PrecisionValue)
@@ -174,10 +194,14 @@ class CA(nn.Module):
         for i, p in enumerate(perceptions):
             out.append(self.rule.transitions[i](p))
         z = torch.stack(out)
+
+
         # min_idx = torch.argmin(z, dim=0, keepdim=True)
         # z = torch.gather(z, 0, min_idx)[0]
+
         idx = torch.argsort(z, dim=0)
-        z = torch.gather(z, 0, idx)[-3]
+        z = torch.gather(z, 0, idx)[self.filters//2]
+
         # z = torch.stack(out).mean(0) * update_rate
 
         # for i in range(len(kernels)):
@@ -185,8 +209,8 @@ class CA(nn.Module):
         #     z = F.conv2d(z, weight=kernels[i], bias=bias[i], padding=0)
         #     z = self.rule.transitions[i](z)
 
-        lifemask = self.get_living_mask(x, alive_thres=0.9, dead_thres=0.6)
-        x = x + (lifemask * z)
+        lifemask = self.get_living_mask(x, alive_thres=.1, dead_thres=0.6)
+        x = x + (lifemask * z * update_rate)
         # deathR = 2*R
         # x = z - F.avg_pool2d(F.pad(z, (deathR, deathR, deathR, deathR), 'circular'), 2 * deathR + 1, padding=0, stride=1) * update_rate
         # z = x + (z - z.mean(dim=2, keepdim=True).mean(dim=3, keepdim=True))* update_rate

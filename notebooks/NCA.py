@@ -25,6 +25,10 @@ def totalistic(x, dim2=False):
         z = z - z.mean()
     else:
         z = z - z.mean(x_idx).mean(y_idx).unsqueeze(y_idx).unsqueeze(x_idx)
+        # z = z - z.mean(x_idx).mean(y_idx).unsqueeze(y_idx).unsqueeze(x_idx) + torch.randn(z.shape[0], z.shape[1], 1, 1).cuda() * 0.001
+        #z = z - z.mean(x_idx).mean(y_idx).unsqueeze(y_idx).unsqueeze(x_idx) + torch.randn(z.shape[0], z.shape[1], 1, 1).cuda() * 0.001
+
+        # z = z - z.mean()
 
     return z
 
@@ -45,38 +49,7 @@ class Rule(nn.Module):
         self.totalistic = True
         self.use_growth_kernel = False
 
-        ###########################################
-        # for forward (general version)
         Rk = RADIUS * 2 + 1
-        self.filter1 = nn.Parameter(torch.randn(FILTERS, CHANNELS, Rk, Rk) / sqrt(Rk))
-        # self.filter1 = nn.Parameter(torch.randn(FILTERS, 4 * CHANNELS, Rk, Rk))
-        # self.filter1 = nn.Parameter(torch.randn(1, 4 * CHANNELS * FILTERS, Rk, Rk))
-        self.bias1 = nn.Parameter(0 * torch.randn(FILTERS))
-
-        self.filter2 = nn.Conv2d(FILTERS, HIDDEN, 1, padding_mode='circular')
-        nn.init.orthogonal_(self.filter2.weight)
-        nn.init.zeros_(self.filter2.bias)
-        # nn.init.zeros_(self.filter2.weight)
-        # self.filter2.weight.data.zero_()
-        # self.filter2.bias = nn.Parameter(self.filter2.bias * 0.1)
-
-        self.extra_filters = []
-        for i in range(10):
-            self.extra_filters.append(nn.Conv2d(HIDDEN, HIDDEN, 1, padding_mode='circular', bias=False))
-            nn.init.orthogonal_(self.extra_filters[-1].weight)
-            # self.extra_filters.append(nn.ReLU())
-            # self.extra_filters.append(nn.Tanh())
-
-        self.extra_filters = nn.Sequential(*self.extra_filters)
-
-        self.filter3 = nn.Conv2d(HIDDEN, CHANNELS, 1, padding_mode='circular', bias=False)
-        nn.init.orthogonal_(self.filter3.weight)
-
-        # nn.init.zeros_(self.filter3.bias)
-        # nn.init.zeros_(self.filter3.weight)
-        # self.filter3.weight.data.zero_()
-        ###########################################
-
         ############################
         # mask/decay kernel
         # a gaussian curve used to radially decay the strength of the kernel
@@ -93,6 +66,68 @@ class Rule(nn.Module):
         self.growth_kernel = growth_kernel
         ############################
 
+        ###########################################
+        # for forward (general version)
+        lower, upper = -(np.sqrt(6.) / np.sqrt(CHANNELS + FILTERS)), (np.sqrt(6.) / np.sqrt(CHANNELS + FILTERS))
+        # kernel_weights = torch.randn(FILTERS, CHANNELS, Rk, Rk) / sqrt(Rk)
+        kernel_weights = torch.rand(FILTERS, CHANNELS, Rk, Rk).cuda()
+        kernel_weights = lower + kernel_weights * (upper - lower)
+        kernel_weights = totalistic(kernel_weights * self.decay_kernel)
+
+        kernel_weights /= kernel_weights.abs().sum(dim=(2, 3), keepdim=True)
+        #kernel_weights /= kernel_weights.abs().sum(dim=(0), keepdim=True)
+        #kernel_weights /= kernel_weights.abs().sum(dim=(1), keepdim=True)
+        # kernel_weights = totalistic(kernel_weights * self.decay_kernel)
+
+        # for iF in range(FILTERS):
+        #     for iC in range(CHANNELS):
+        #         # kernel_weights[iF, iC] -= kernel_weights[iF, iC].mean()
+        #         kernel_weights[iF, iC] *= 1 + 0.001 * torch.randn(1).cuda()
+
+        self.filter1 = nn.Parameter(kernel_weights)
+        # self.filter1 = nn.Parameter(torch.randn(FILTERS, 4 * CHANNELS, Rk, Rk))
+        # self.filter1 = nn.Parameter(torch.randn(1, 4 * CHANNELS * FILTERS, Rk, Rk))
+        self.bias1 = nn.Parameter(0 * torch.randn(FILTERS))
+
+        self.filter2 = nn.Conv2d(FILTERS, HIDDEN, 1, padding_mode='circular')
+        #nn.init.orthogonal_(self.filter2.weight)
+        nn.init.xavier_normal_(self.filter2.weight)
+        # nn.init.dirac_(self.filter2.weight)
+        # nn.init.normal_(self.filter2.weight)
+        nn.init.zeros_(self.filter2.bias)
+        # nn.init.zeros_(self.filter2.weight)
+        # self.filter2.weight.data.zero_()
+        # self.filter2.bias = nn.Parameter(self.filter2.bias * 0.1)
+
+        # self.extra_filters = []
+        # for i in range(10):
+        #     self.extra_filters.append(nn.Conv2d(HIDDEN, HIDDEN, 1, padding_mode='circular', bias=False))
+        #     nn.init.orthogonal_(self.extra_filters[-1].weight)
+        #     # self.extra_filters.append(nn.ReLU())
+        #     # self.extra_filters.append(nn.Tanh())
+        #
+        # self.extra_filters = nn.Sequential(*self.extra_filters)
+
+        self.filter3 = nn.Conv2d(HIDDEN, CHANNELS, 1, padding_mode='circular', bias=False)
+        #nn.init.orthogonal_(self.filter3.weight)
+        nn.init.xavier_normal_(self.filter3.weight)
+        # nn.init.dirac_(self.filter3.weight)
+        # nn.init.normal_(self.filter3.weight)
+
+        # nn.init.zeros_(self.filter3.bias)
+        # nn.init.zeros_(self.filter3.weight)
+        # self.filter3.weight.data.zero_()
+
+        # activation functions
+        thresh1 = np.random.random()*2. - 1
+        thresh2 = thresh1 + (np.random.random() + 0.1)
+        self.thresh1 = [thresh1, thresh2]
+
+        thresh1 = np.random.random() * 2. - 1
+        thresh2 = thresh1 + (np.random.random() + 0.1)
+        self.thresh2 = [thresh1, thresh2]
+
+        ###########################################
 
         ###########################################
         # for forward_perception
@@ -127,8 +162,8 @@ class Rule(nn.Module):
         decay = torch.exp(-(rm - KCENTER) ** 2 / (KSMOOTH ** 2 + 1e-6))
         decay = torch.where(rm <= OUTR, decay, 0.)
         decay = torch.where(rm >= INR, decay, 0.)
-        decay = decay / decay.max() * GAMP
-        decay = decay - decay.mean()
+        decay = decay / decay.sum() * GAMP
+        # decay = decay - decay.mean()
         decay = decay.type(torch.cuda.FloatTensor)
         return decay
 
@@ -199,17 +234,19 @@ class CA(nn.Module):
         If I understand this correctly, this is essentially applying a depthwise seperable convolution operation on the input (but I am a bit uncertain).
         PRETTY SURE THIS IS WRONG, RE-WRITE THIS!!
         '''
-        b, c, h, w = x.shape
+        # b, c, h, w = x.shape
         # circular/gaussian kernel mask
-        filter1 = self.rule.filter1 * self.rule.decay_kernel
-        if self.rule.totalistic:
-            filter1 = totalistic(filter1)
-        weights = filter1
+        # filter1 = totalistic(self.rule.filter1 * self.rule.decay_kernel)
+        #
+        # if self.rule.totalistic:
+        #     filter1 = totalistic(filter1)
+        weights = self.rule.filter1
         # weights = self.rule.filter1
         bias = self.rule.bias1
         R = self.radius
         # z = F.conv2d(self.psi, weight=weights, bias=bias, padding=2, groups=CHANNELS)
         z = F.pad(x, (R, R, R, R), 'circular')
+        # z = F.pad(x, (R, R, R, R), 'constant', 0.)
         z = F.conv2d(z, weight=weights, bias=bias, padding=0)
 
         # selection_idx = torch.argmax(z.mean(dim=(2, 3)), dim=1)
@@ -218,11 +255,14 @@ class CA(nn.Module):
 
 
         z = F.leaky_relu(z)
+        # z = ((z > self.rule.thresh1[0]) & (z < self.rule.thresh1[1])) * z
 
         if self.rule.use_growth_kernel:
             z = self.perchannel_conv_g(z, self.rule.growth_kernel.unsqueeze(0) )
 
-        z = F.leaky_relu(self.rule.filter2(z))
+        z = self.rule.filter2(z)
+        z = F.leaky_relu(z)
+        # z = ((z > self.rule.thresh2[0]) & (z < self.rule.thresh2[1])) * z
 
         # select max/min channel per pixel
         # selection_idx = torch.argmax(z, dim=1, keepdim=True)
@@ -232,18 +272,18 @@ class CA(nn.Module):
         # random selection
         # z = torch.gather(z, 1, torch.randint(z.shape[1], size=(b, 1, h, w)).cuda())
 
-        z = self.rule.extra_filters(z)
+        # z = self.rule.extra_filters(z)
 
         # select from top/bottom sorted channels
         # z = torch.gather(z, 1, torch.argsort(z, dim=1))[:, -12:, :, :]
 
-        update_mask = (torch.rand(b, 1, h, w) + update_rate).floor().cuda()
-        z = self.rule.filter3(z) * update_mask
+        # update_mask = (torch.rand(b, 1, h, w) + update_rate).floor().cuda()
+        # z = self.rule.filter3(z) * update_mask
 
-
+        z = self.rule.filter3(z) * update_rate
         z = x + z
-        x = torch.clamp(z, -128, 127)
-        # x = torch.clamp(z, 0, 1)
+        # x = torch.clamp(z, 0, 255)
+        x = torch.clamp(z, 0, 1)
         return x
 
 

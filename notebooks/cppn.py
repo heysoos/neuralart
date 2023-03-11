@@ -72,11 +72,15 @@ class Rule(nn.Module):
 
 
 class CPPN(nn.Module):
-    def __init__(self, net_size=[32, 32, 32], dim_z=16, dim_c=3, scale=5, res=512):
+    def __init__(self, net_size=[32, 32, 32], dim_z=16, dim_c=3, scale=5, res=512, num_nulls=0):
         super().__init__()
 
         self.dim_c = dim_c
+<<<<<<< Updated upstream
         self.dim_z = dim_z
+=======
+        self.num_nulls = num_nulls  # extra coordinate dimensions for fun
+>>>>>>> Stashed changes
         self.init_grid(scale, res, dim_z)  # init self.coords
 
         self.dim_in = len(self.coords)
@@ -101,7 +105,7 @@ class CPPN(nn.Module):
 
         self.apply(weights_init)
 
-    def _coordinates(self, scale, xres, yres, z, flatten=True, batch_size=1, num_nulls=3):
+    def _coordinates(self, scale, xres, yres, z, flatten=True, batch_size=1):
 
         # check if z has the same batch dim as batch_size
 
@@ -116,27 +120,25 @@ class CPPN(nn.Module):
 
         # placeholder matrices that can be replaced with images or what-have-you....
         null = 0 * R
-        nulls = [null for i in range(num_nulls)]
+        nulls = [null for i in range(self.num_nulls)]
 
         spacecoords = [X, Y, R] + nulls
 
         # only kept unflattened for hires images
         if flatten:
             spacecoords = [c.reshape(1, -1, 1) for c in spacecoords]
-        #             X, Y, R, null = X.reshape(1, -1, 1), Y.reshape(1, -1, 1), R.reshape(1, -1, 1), null.reshape(1, -1, 1) # shape=(batch_size, *, in_features)
 
         # tile for batch size
         spacecoords = [np.tile(c, (batch_size, 1, 1)) for c in spacecoords]
-        #         X, Y, R, null = np.tile(X, (batch_size, 1, 1)), np.tile(Y, (batch_size, 1, 1)), np.tile(R, (batch_size, 1, 1)), np.tile(null, (batch_size, 1, 1))
 
         spacecoords = [torch.cuda.FloatTensor(c) for c in spacecoords]
 
         return spacecoords + [z]
 
-    def init_grid(self, scale, res, dim_z, z=None, num_nulls=3):
+    def init_grid(self, scale, res, dim_z, z=None):
         if z is None:
             z = torch.zeros(dim_z)
-        self.coords = [coord for coord in self._coordinates(scale, res, res, z, num_nulls)]
+        self.coords = [coord for coord in self._coordinates(scale, res, res, z, self.num_nulls)]
 
     def reinit(self, empty_cache=False):
 
@@ -184,6 +186,7 @@ class CPPN(nn.Module):
         #         out = nn.Sequential(*self.rule.seq[-2:])(out)
 
         return out
+
 
 
 class Sampler():
