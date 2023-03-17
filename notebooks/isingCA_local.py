@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 
 class Rule(nn.Module):
-    def __init__(self, BETA=1, CHANNELS=8, RADIUS=2):
+    def __init__(self, BETA=1, CHANNELS=8, RADIUS=1):
         super().__init__()
         self.channels = CHANNELS
         self.beta = BETA
@@ -17,10 +17,10 @@ class Rule(nn.Module):
         Rk = 2*RADIUS + 1
 
         self.temp_adapt = False
-        self.alpha = 1e-1  # update rate
+        self.alpha = 0.5  # update rate
         self.h = 1e-1  # magnetization coef (growth coef)
-        self.eps = 2.05e-2  # decay coef
-        self.D = 2. * self.eps  # diffusion coef
+        self.eps = 2.00e-2  # decay coef
+        self.D = 1. #2. * self.eps  # diffusion coef
 
         self.m_pow = 2.
         self.temp_pow = 1.

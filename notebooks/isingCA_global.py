@@ -18,9 +18,9 @@ class Rule(nn.Module):
         Rk = 2*RADIUS + 1
 
         self.temp_adapt = TEMP_ADAPT
-        self.alpha = 5e-2  # update rate
+        self.alpha = 0.5  # update rate
         self.h = 1e-1  # magnetization coef (growth coef)
-        self.eps = 2.269e-1  # decay coef
+        self.eps = 2.05e-1  # decay coef
 
         nearest_neighbours = torch.zeros(1, CHANNELS, Rk, Rk).cuda()
 
@@ -48,11 +48,11 @@ class Rule(nn.Module):
 
         rand = torch.rand_like(s)
 
-        dropout_mask = (torch.rand_like(s[0, 0]) > 0.9).unsqueeze(0).unsqueeze(0)
+        dropout_mask = (torch.rand_like(s[0, 0]) > 0.5).unsqueeze(0).unsqueeze(0)
         flip = -2. * torch.logical_and(rand < p, dropout_mask) + 1
 
         if self.temp_adapt:
-            if torch.rand(1) > 0.5:
+            if torch.rand(1) > 0.9:
                 alpha = self.alpha
                 eps = self.eps / sqrt(s.numel())
 

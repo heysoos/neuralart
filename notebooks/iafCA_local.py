@@ -89,7 +89,7 @@ class Rule(nn.Module):
         pre = F.pad(x[:, [3], ...], (Rk, Rk, Rk, Rk), mode='circular')  # pre-trace
         pre = F.unfold(pre, 2*Rk + 1)
 
-        pre_spike = F.pad(x[:, [0], ...], (Rk, Rk, Rk, Rk), mode='circular')  # pre-trace
+        pre_spike = F.pad(x[:, [0], ...], (Rk, Rk, Rk, Rk), mode='circular')  # pre-spike
         pre_spike = F.unfold(pre_spike, 2*Rk + 1)
 
         x[:, [0], ...] = x[:, [0], ...] * self.EI
@@ -104,7 +104,7 @@ class Rule(nn.Module):
         # V = V + noise_input #
 
         I = F.unfold(S, 2*Rk + 1) * self.nearest_neighbours
-        I = I.sum(dim=1).view(1, 1, self.RES[0], self.RES[1])
+        I = I.sum(dim=1).view(1, 1, self.RES[0], self.RES[1]) ## fancier integration than sum? dendridic computation here
         V = V - self.decay_constant * V + self.integration_constant * I + self.constant_current
         S = (V > T) * (R > self.refractor_time) * (E > self.min_energy) * 1.
 
@@ -123,12 +123,12 @@ class Rule(nn.Module):
         V = V * (1 - S)
 
         if self.plasticity:
-            post = F.unfold(A, 1)  # pre-trace
-            post_spike = F.unfold(S, 1)
+            post = F.unfold(A, 1)  # post-trace
+            post_spike = F.unfold(S, 1) # post-spike
             # delta = (pre * (post - F.unfold(self.target_rate_mat, 1))) * (self.nearest_neighbours > 1e-6) # * (F.unfold(self.EI, 1) < 0.)))
 
             delta_E = (-pre_spike * post + post_spike * pre) * (~self.if_inhib)
-            delta_I = (pre_spike * (post - F.unfold(self.target_rate_mat, 1)) + post_spike * pre) * self.if_inhib
+            delta_I = 10 * (pre_spike * (post - F.unfold(self.target_rate_mat, 1)) + post_spike * pre) * self.if_inhib
             delta = delta_E + delta_I
             delta[:, Rk * (2 * Rk + 1) + Rk, :] = 0  # set center pixel to 0
             # delta = delta * (self.nearest_neighbours > 1e-6)
@@ -139,7 +139,7 @@ class Rule(nn.Module):
             new_k_I = new_k_I / (new_k_I.sum(dim=1) + 1e-6) * self.k_sums_I
             new_k_E = new_k * (~self.if_inhib)
             new_k_E = new_k_E / (new_k_E.sum(dim=1) + 1e-6) * self.k_sums_E
-            new_k = new_k_I + 0.5 * new_k_E
+            new_k = new_k_I + new_k_E
             # new_k = new_k * (self.nearest_neighbours > 1e-6)
 
 
@@ -169,7 +169,7 @@ class iafCA_local(nn.Module):
     def initGrid(self):
         shape = self.RES
         rand = torch.rand(1, 6, shape[0], shape[1]) * 2.
-        rand[0, 0] = (rand[0, 0] > 0.8) * 1.
+        rand[0, 0] = (rand[0, 0] > 0.95) * 1.
         rand[0, 4] = torch.ones_like(rand[0, 4]) * self.rule.threshhold
         rand[0, 5] = torch.ones_like(rand[0, 5])
 
